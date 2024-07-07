@@ -525,7 +525,8 @@ impl Item for TextInput {
                 if event.text.is_empty()
                     || event.text.as_str().chars().any(|ch| {
                         // exclude the private use area as we encode special keys into it
-                        ('\u{f702}'..='\u{f7ff}').contains(&ch) || (ch.is_control() && ch != '\n')
+                        ('\u{f702}'..='\u{f7ff}').contains(&ch)
+                            || (ch.is_control() && ch != '\n' && ch != '\u{1b}')
                     })
                 {
                     return KeyEventResult::EventIgnored;
