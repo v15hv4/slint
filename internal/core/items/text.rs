@@ -735,8 +735,6 @@ pub enum TextCursorDirection {
     Backward,
     ForwardByWord,
     BackwardByWord,
-    NextLine,
-    PreviousLine,
     PreviousCharacter, // breaks grapheme boundaries, so only used by delete-previous-char
     StartOfLine,
     EndOfLine,
@@ -753,8 +751,6 @@ impl core::convert::TryFrom<char> for TextCursorDirection {
         Ok(match value {
             key_codes::LeftArrow => Self::Backward,
             key_codes::RightArrow => Self::Forward,
-            key_codes::UpArrow => Self::PreviousLine,
-            key_codes::DownArrow => Self::NextLine,
             // On macos this scrolls to the top or the bottom of the page
             #[cfg(not(target_os = "macos"))]
             key_codes::Home => Self::StartOfLine,
@@ -928,26 +924,6 @@ impl TextInput {
             }
             TextCursorDirection::Backward => {
                 grapheme_cursor.prev_boundary(&text, 0).ok().flatten().unwrap_or(0)
-            }
-            TextCursorDirection::NextLine => {
-                reset_preferred_x_pos = false;
-
-                let cursor_rect = self.cursor_rect_for_byte_offset(last_cursor_pos, window_adapter);
-                let mut cursor_xy_pos = cursor_rect.center();
-
-                cursor_xy_pos.y += font_height;
-                cursor_xy_pos.x = self.preferred_x_pos.get();
-                self.byte_offset_for_position(cursor_xy_pos, window_adapter)
-            }
-            TextCursorDirection::PreviousLine => {
-                reset_preferred_x_pos = false;
-
-                let cursor_rect = self.cursor_rect_for_byte_offset(last_cursor_pos, window_adapter);
-                let mut cursor_xy_pos = cursor_rect.center();
-
-                cursor_xy_pos.y -= font_height;
-                cursor_xy_pos.x = self.preferred_x_pos.get();
-                self.byte_offset_for_position(cursor_xy_pos, window_adapter)
             }
             TextCursorDirection::PreviousCharacter => {
                 let mut i = last_cursor_pos;
