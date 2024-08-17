@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -9,7 +9,6 @@ use i_slint_core::graphics::FontRequest;
 use i_slint_core::items::{TextHorizontalAlignment, TextVerticalAlignment};
 use i_slint_core::lengths::{LogicalLength, ScaleFactor};
 use i_slint_core::{items, Color};
-use skia_safe::FontMgr;
 
 use super::itemrenderer::to_skia_color;
 use super::{PhysicalLength, PhysicalPoint, PhysicalRect, PhysicalSize};
@@ -34,7 +33,6 @@ thread_local! {
         let font_mgr = skia_safe::FontMgr::new();
         let type_face_font_provider = skia_safe::textlayout::TypefaceFontProvider::new();
         let mut font_collection = skia_safe::textlayout::FontCollection::new();
-        font_collection.set_default_font_manager(FontMgr::new(), None);
         // FontCollection first looks up in the dynamic font manager and then the asset font manager. If the
         // family is empty, the default font manager will match against the system default. We want that behavior,
         // and only if the family is not present in the system, then we want to fall back to the assert font manager
@@ -43,6 +41,14 @@ thread_local! {
         font_collection.set_dynamic_font_manager(font_mgr.clone());
         FontCache { font_collection, font_mgr, type_face_font_provider: RefCell::new(type_face_font_provider), custom_fonts: Default::default() }
     }
+}
+
+pub fn default_font(scale_factor: f32) -> Option<skia_safe::Font> {
+    FONT_CACHE.with(|font_cache| {
+        font_cache.font_mgr.legacy_make_typeface(None, skia_safe::FontStyle::default()).map(
+            |type_face| skia_safe::Font::new(type_face, DEFAULT_FONT_SIZE.get() * scale_factor),
+        )
+    })
 }
 
 pub struct Selection {
@@ -91,7 +97,7 @@ pub fn create_layout(
 
     if overflow == items::TextOverflow::Elide {
         style.set_ellipsis("…");
-        if wrap == items::TextWrap::WordWrap {
+        if wrap != items::TextWrap::NoWrap {
             let metrics = text_style.font_metrics();
             let line_height = metrics.descent - metrics.ascent + metrics.leading;
             style.set_max_lines((max_height.get() / line_height).floor() as usize);
@@ -147,7 +153,7 @@ pub fn create_layout(
     }
 
     let mut paragraph = builder.build();
-    paragraph.layout(max_width.map_or(core::f32::MAX, |physical_width| physical_width.get()));
+    paragraph.layout(max_width.map_or(f32::MAX, |physical_width| physical_width.get()));
 
     let layout_height = PhysicalLength::new(paragraph.height());
 

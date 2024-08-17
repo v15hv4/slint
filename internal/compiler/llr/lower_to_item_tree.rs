@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use by_address::ByAddress;
 
@@ -8,34 +8,52 @@ use crate::expression_tree::Expression as tree_Expression;
 use crate::langtype::{ElementType, Type};
 use crate::llr::item_tree::*;
 use crate::namedreference::NamedReference;
-use crate::object_tree::{Component, ElementRc, PropertyVisibility};
+use crate::object_tree::{self, Component, ElementRc, PropertyAnalysis, PropertyVisibility};
+use crate::CompilerConfiguration;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-pub fn lower_to_item_tree(component: &Rc<Component>) -> PublicComponent {
+pub fn lower_to_item_tree(
+    document: &crate::object_tree::Document,
+    compiler_config: &CompilerConfiguration,
+) -> CompilationUnit {
     let mut state = LoweringState::default();
 
     let mut globals = Vec::new();
-    for g in &component.used_types.borrow().globals {
+    for g in &document.used_types.borrow().globals {
         let count = globals.len();
         globals.push(lower_global(g, count, &mut state));
     }
-    for c in &component.used_types.borrow().sub_components {
-        let sc = lower_sub_component(c, &state, None);
+    for c in &document.used_types.borrow().sub_components {
+        let sc = lower_sub_component(c, &state, None, compiler_config);
         state.sub_components.insert(ByAddress(c.clone()), sc);
     }
 
-    let sc = lower_sub_component(component, &state, None);
-    let public_properties = public_properties(component, &sc.mapping, &state);
-    let item_tree = ItemTree {
-        tree: make_tree(&state, &component.root_element, &sc, &[]),
-        root: Rc::try_unwrap(sc.sub_component).unwrap(),
-        parent_context: None,
-    };
-    let root = PublicComponent {
-        item_tree,
+    let public_components = document
+        .exported_roots()
+        .map(|component| {
+            let sc = lower_sub_component(&component, &state, None, compiler_config);
+            let public_properties = public_properties(&component, &sc.mapping, &state);
+            let mut item_tree = ItemTree {
+                tree: make_tree(&state, &component.root_element, &sc, &[]),
+                root: Rc::try_unwrap(sc.sub_component).unwrap(),
+                parent_context: None,
+            };
+            // For C++ codegen, the root component must have the same name as the public component
+            item_tree.root.name = component.id.clone();
+            PublicComponent {
+                item_tree,
+                public_properties,
+                private_properties: component.private_properties.borrow().clone(),
+                name: component.id.clone(),
+            }
+        })
+        .collect();
+
+    let root = CompilationUnit {
+        public_components,
         globals,
-        sub_components: component
+        sub_components: document
             .used_types
             .borrow()
             .sub_components
@@ -44,8 +62,7 @@ pub fn lower_to_item_tree(component: &Rc<Component>) -> PublicComponent {
                 state.sub_components[&ByAddress(tree_sub_compo.clone())].sub_component.clone()
             })
             .collect(),
-        public_properties,
-        private_properties: component.private_properties.borrow().clone(),
+        has_debug_info: compiler_config.debug_info,
     };
     super::optim_passes::run_passes(&root);
     root
@@ -169,10 +186,8 @@ fn component_id(component: &Rc<Component>) -> String {
         component.root_element.borrow().id.clone()
     } else if component.id.is_empty() {
         format!("Component_{}", component.root_element.borrow().id)
-    } else if component.is_sub_component() {
-        format!("{}_{}", component.id, component.root_element.borrow().id)
     } else {
-        component.id.clone()
+        format!("{}_{}", component.id, component.root_element.borrow().id)
     }
 }
 
@@ -180,6 +195,7 @@ fn lower_sub_component(
     component: &Rc<Component>,
     state: &LoweringState,
     parent_context: Option<&ExpressionContext>,
+    compiler_config: &CompilerConfiguration,
 ) -> LoweredSubComponent {
     let mut sub_component = SubComponent {
         name: component_id(component),
@@ -189,6 +205,7 @@ fn lower_sub_component(
         repeated: Default::default(),
         component_containers: Default::default(),
         popup_windows: Default::default(),
+        timers: Default::default(),
         sub_components: Default::default(),
         property_init: Default::default(),
         change_callbacks: Default::default(),
@@ -201,6 +218,7 @@ fn lower_sub_component(
         layout_info_h: super::Expression::BoolLiteral(false).into(),
         layout_info_v: super::Expression::BoolLiteral(false).into(),
         accessible_prop: Default::default(),
+        element_infos: Default::default(),
         prop_analysis: Default::default(),
     };
     let mut mapping = LoweredSubComponentMapping::default();
@@ -325,6 +343,13 @@ fn lower_sub_component(
             change_callbacks.push((NamedReference::new(element, prop), expr.borrow().clone()));
         }
 
+        if compiler_config.debug_info {
+            let element_infos = elem.element_infos();
+            if !element_infos.is_empty() {
+                sub_component.element_infos.insert(*elem.item_index.get().unwrap(), element_infos);
+            }
+        }
+
         Some(element.clone())
     });
     let ctx = ExpressionContext { mapping: &mapping, state, parent: parent_context, component };
@@ -406,8 +431,10 @@ fn lower_sub_component(
             lower_component_container(&component_container, &sub_component, &ctx)
         })
         .collect();
-    sub_component.repeated =
-        repeated.into_iter().map(|elem| lower_repeated_component(&elem, &ctx)).collect();
+    sub_component.repeated = repeated
+        .into_iter()
+        .map(|elem| lower_repeated_component(&elem, &ctx, compiler_config))
+        .collect();
     for s in &mut sub_component.sub_components {
         s.repeater_offset +=
             (sub_component.repeated.len() + sub_component.component_containers.len()) as u32;
@@ -417,11 +444,19 @@ fn lower_sub_component(
         .popup_windows
         .borrow()
         .iter()
-        .map(|popup| lower_popup_component(&popup.component, &ctx))
+        .map(|popup| lower_popup_component(&popup, &ctx, &compiler_config))
         .collect();
+
+    sub_component.timers =
+        component.timers.borrow().iter().map(|t| lower_timer(&t, &ctx)).collect();
 
     crate::generator::for_each_const_properties(component, |elem, n| {
         let x = ctx.map_property_reference(&NamedReference::new(elem, n));
+        // ensure that all const properties have analysis
+        sub_component.prop_analysis.entry(x.clone()).or_insert_with(|| PropAnalysis {
+            property_init: None,
+            analysis: get_property_analysis(elem, n),
+        });
         sub_component.const_properties.push(x);
     });
 
@@ -552,12 +587,17 @@ fn get_property_analysis(elem: &ElementRc, p: &str) -> crate::object_tree::Prope
     }
 }
 
-fn lower_repeated_component(elem: &ElementRc, ctx: &ExpressionContext) -> RepeatedElement {
+fn lower_repeated_component(
+    elem: &ElementRc,
+    ctx: &ExpressionContext,
+    compiler_config: &CompilerConfiguration,
+) -> RepeatedElement {
     let e = elem.borrow();
     let component = e.base_type.as_component().clone();
     let repeated = e.repeated.as_ref().unwrap();
 
-    let sc: LoweredSubComponent = lower_sub_component(&component, ctx.state, Some(ctx));
+    let sc: LoweredSubComponent =
+        lower_sub_component(&component, ctx.state, Some(ctx), compiler_config);
 
     let geom = component.root_element.borrow().geometry_props.clone().unwrap();
 
@@ -607,13 +647,18 @@ fn lower_component_container(
     }
 }
 
-fn lower_popup_component(component: &Rc<Component>, ctx: &ExpressionContext) -> ItemTree {
-    let sc = lower_sub_component(component, ctx.state, Some(ctx));
-    ItemTree {
-        tree: make_tree(ctx.state, &component.root_element, &sc, &[]),
+fn lower_popup_component(
+    popup: &object_tree::PopupWindow,
+    ctx: &ExpressionContext,
+    compiler_config: &CompilerConfiguration,
+) -> PopupWindow {
+    let sc = lower_sub_component(&popup.component, ctx.state, Some(ctx), compiler_config);
+    let item_tree = ItemTree {
+        tree: make_tree(ctx.state, &popup.component.root_element, &sc, &[]),
         root: Rc::try_unwrap(sc.sub_component).unwrap(),
         parent_context: Some(
-            component
+            popup
+                .component
                 .parent_element
                 .upgrade()
                 .unwrap()
@@ -624,6 +669,32 @@ fn lower_popup_component(component: &Rc<Component>, ctx: &ExpressionContext) -> 
                 .id
                 .clone(),
         ),
+    };
+
+    use super::Expression::PropertyReference as PR;
+    let position = super::lower_expression::make_struct(
+        "Point",
+        [
+            ("x", Type::LogicalLength, PR(sc.mapping.map_property_reference(&popup.x, ctx.state))),
+            ("y", Type::LogicalLength, PR(sc.mapping.map_property_reference(&popup.y, ctx.state))),
+        ],
+    );
+
+    PopupWindow { item_tree, position: position.into() }
+}
+
+fn lower_timer(timer: &object_tree::Timer, ctx: &ExpressionContext) -> Timer {
+    Timer {
+        interval: super::Expression::PropertyReference(ctx.map_property_reference(&timer.interval))
+            .into(),
+        running: super::Expression::PropertyReference(ctx.map_property_reference(&timer.running))
+            .into(),
+        // TODO: this calls a callback instead of inlining the callback code directly
+        triggered: super::Expression::CallBackCall {
+            callback: ctx.map_property_reference(&timer.triggered),
+            arguments: vec![],
+        }
+        .into(),
     }
 }
 
@@ -730,16 +801,18 @@ fn lower_global(
             state
                 .global_properties
                 .insert(nr, PropertyReference::Global { global_index, property_index });
-            prop_analysis.push(
-                global
+            prop_analysis.push(PropertyAnalysis {
+                // Assume that a builtin global property can always be set from the builtin code
+                is_set_externally: true,
+                ..global
                     .root_element
                     .borrow()
                     .property_analysis
                     .borrow()
                     .get(p)
                     .cloned()
-                    .unwrap_or_default(),
-            );
+                    .unwrap_or_default()
+            });
         }
         true
     } else {

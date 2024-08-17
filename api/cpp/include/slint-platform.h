@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 
@@ -392,10 +392,7 @@ public:
     /// Returns a copy of text stored in the system clipboard, if any.
     ///
     /// If the platform doesn't support the specified clipboard, the function should return nullopt
-    virtual std::optional<SharedString> clipboard_text(Clipboard)
-    {
-        return {};
-    }
+    virtual std::optional<SharedString> clipboard_text(Clipboard) { return {}; }
 
     /// Spins an event loop and renders the visible windows.
     virtual void run_event_loop() { }
@@ -593,6 +590,7 @@ public:
         }
 
         /// Returns a view on all the rectangles in this region.
+        /// The rectangles do not overlap.
         /// The returned type is a C++ view over PhysicalRegion::Rect structs.
         ///
         /// It can be used like so:
@@ -603,14 +601,27 @@ public:
         /// ```
         auto rectangles() const
         {
-            return std::views::counted(inner.rectangles, inner.count)
-                    | std::views::transform([](const auto &box) {
-                          return Rect {
-                              .origin = PhysicalPosition({ .x = box.min.x, .y = box.min.y }),
-                              .size = PhysicalSize({ .width = uint32_t(box.max.x - box.min.x),
-                                                     .height = uint32_t(box.max.y - box.min.y) })
-                          };
-                      });
+            SharedVector<cbindgen_private::IntRect> rectangles;
+            slint_software_renderer_region_to_rects(&inner, &rectangles);
+#    if __cpp_lib_ranges >= 202110L // DR20 P2415R2
+            using std::ranges::owning_view;
+#    else
+            struct owning_view : std::ranges::view_interface<owning_view>
+            {
+                SharedVector<cbindgen_private::IntRect> rectangles;
+                owning_view(SharedVector<cbindgen_private::IntRect> &&rectangles)
+                    : rectangles(rectangles)
+                {
+                }
+                auto begin() const { return rectangles.begin(); }
+                auto end() const { return rectangles.end(); }
+            };
+#    endif
+            return owning_view(std::move(rectangles)) | std::views::transform([](const auto &r) {
+                       return Rect { .origin = PhysicalPosition({ .x = r.x, .y = r.y }),
+                                     .size = PhysicalSize({ .width = uint32_t(r.width),
+                                                            .height = uint32_t(r.height) }) };
+                   });
         }
 
         /// A Rectangle defined with an origin and a size.
@@ -698,10 +709,9 @@ public:
     /// to fill it with pixels. After the line buffer is filled with pixels, your implementation is
     /// free to flush that line to the screen for display.
     template<typename Callback>
-    requires requires(Callback callback)
-    {
-        callback(size_t(0), size_t(0), size_t(0), [&callback](std::span<Rgb565Pixel>) {});
-    }
+        requires requires(Callback callback) {
+            callback(size_t(0), size_t(0), size_t(0), [&callback](std::span<Rgb565Pixel>) {});
+        }
     PhysicalRegion render_by_line(Callback process_line_callback) const
     {
         auto r = cbindgen_private::slint_software_renderer_render_by_line_rgb565(
@@ -720,6 +730,7 @@ public:
                 &process_line_callback);
         return PhysicalRegion { r };
     }
+#    endif
 
     /// This enum describes the rotation that is applied to the buffer when rendering.
     /// To be used in set_rendering_rotation()
@@ -742,7 +753,6 @@ public:
         cbindgen_private::slint_software_renderer_set_rendering_rotation(
                 inner, static_cast<int>(rotation));
     }
-#    endif
 };
 #endif
 

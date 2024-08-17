@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use anyhow::Context;
 use std::io::{BufWriter, Write};
@@ -28,14 +28,30 @@ fn enums(path: &Path) -> anyhow::Result<()> {
             writeln!(enums_priv, "using slint::PointerEventButton;")?;
             &mut enums_pub
         }};
+        (AccessibleRole) => {{
+            writeln!(enums_priv, "using slint::testing::AccessibleRole;")?;
+            &mut enums_pub
+        }};
         ($_:ident) => {
             &mut enums_priv
+        };
+    }
+    macro_rules! enum_sub_namespace {
+        (AccessibleRole) => {{
+            Some("testing")
+        }};
+        ($_:ident) => {
+            None
         };
     }
     macro_rules! print_enums {
          ($( $(#[doc = $enum_doc:literal])* $(#[non_exhaustive])? enum $Name:ident { $( $(#[doc = $value_doc:literal])* $Value:ident,)* })*) => {
              $(
                 let file = enum_file!($Name);
+                let namespace: Option<&'static str> = enum_sub_namespace!($Name);
+                if let Some(ns) = namespace {
+                    writeln!(file, "namespace {} {{", ns)?;
+                }
                 $(writeln!(file, "///{}", $enum_doc)?;)*
                 writeln!(file, "enum class {} {{", stringify!($Name))?;
                 $(
@@ -43,6 +59,9 @@ fn enums(path: &Path) -> anyhow::Result<()> {
                     writeln!(file, "    {},", stringify!($Value).trim_start_matches("r#"))?;
                 )*
                 writeln!(file, "}};")?;
+                if namespace.is_some() {
+                    writeln!(file, "}}")?;
+                }
              )*
          }
     }
@@ -141,7 +160,8 @@ fn builtin_structs(path: &Path) -> anyhow::Result<()> {
                 )*
                 $(
                     $(writeln!(file, "    ///{}", $pri_doc)?;)*
-                    let pri_type = match stringify!($pri_type) {
+                    let pri_type = stringify!($pri_type).replace(' ', "");
+                    let pri_type = match pri_type.as_str() {
                         "usize" => "uintptr_t",
                         "crate::animations::Instant" => "uint64_t",
                         // This shouldn't be accessed by the C++ anyway, just need to have the same ABI in a struct
@@ -262,7 +282,8 @@ fn gen_corelib(
         "TouchArea",
         "FocusScope",
         "Flickable",
-        "Text",
+        "SimpleText",
+        "ComplexText",
         "Path",
         "WindowItem",
         "TextInput",
@@ -533,6 +554,7 @@ fn gen_corelib(
             "slint_windowrc_set_logical_size",
             "slint_windowrc_set_physical_size",
             "slint_windowrc_color_scheme",
+            "slint_windowrc_default_font_size",
             "slint_windowrc_dispatch_pointer_event",
             "slint_windowrc_dispatch_key_event",
             "slint_windowrc_dispatch_event",
@@ -940,7 +962,7 @@ macro_rules! declare_features {
                 let mut defines = String::new();
                 $(
                     if self.$f {
-                        defines = format!("{defines}#define SLINT_FEATURE_{}\n", stringify!($f).to_ascii_uppercase());
+                        defines = format!("{defines}///This macro is defined when Slint was configured with the SLINT_FEATURE_{0} flag enabled\n#define SLINT_FEATURE_{0}\n", stringify!($f).to_ascii_uppercase());
                     };
                 )*
                 defines
@@ -959,7 +981,26 @@ macro_rules! declare_features {
     };
 }
 
-declare_features! {interpreter backend_qt freestanding renderer_software renderer_skia experimental gettext testing}
+declare_features! {
+    interpreter
+    testing
+    backend_qt
+    backend_winit
+    backend_winit_x11
+    backend_winit_wayland
+    backend_linuxkms
+    backend_linuxkms_noseat
+    renderer_femtovg
+    renderer_skia
+    renderer_skia_opengl
+    renderer_skia_vulkan
+    renderer_software
+    gettext
+    accessibility
+    system_testing
+    freestanding
+    experimental
+}
 
 /// Generate the headers.
 /// `root_dir` is the root directory of the slint git repo

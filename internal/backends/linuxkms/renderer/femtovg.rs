@@ -1,14 +1,12 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::{num::NonZeroU32, rc::Rc};
 
 use i_slint_core::item_rendering::ItemRenderer;
 use i_slint_core::platform::PlatformError;
 use i_slint_renderer_femtovg::FemtoVGRendererExt;
-use raw_window_handle::{
-    HasDisplayHandle, HasRawDisplayHandle, HasRawWindowHandle, HasWindowHandle,
-};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use glutin::{
     context::{ContextApi, ContextAttributesBuilder},
@@ -45,18 +43,19 @@ impl GlContextWrapper {
 
         let gl_display = unsafe {
             glutin::display::Display::new(
-                display_handle.raw_display_handle(),
+                display_handle.as_raw(),
                 glutin::display::DisplayApiPreference::Egl,
             )
             .map_err(|e| format!("Error creating EGL display: {e}"))?
         };
 
-        let config_template = glutin::config::ConfigTemplateBuilder::new().build();
+        let config_template = gbm_display.config_template_builder().build();
 
         let config = unsafe {
             gl_display
                 .find_configs(config_template)
                 .map_err(|e| format!("Error locating EGL configs: {e}"))?
+                .filter(|config| gbm_display.filter_gl_config(config))
                 .reduce(|accum, config| {
                     let transparency_check = config.supports_transparency().unwrap_or(false)
                         & !accum.supports_transparency().unwrap_or(false);
@@ -75,10 +74,10 @@ impl GlContextWrapper {
                 major: 2,
                 minor: 0,
             })))
-            .build(Some(window_handle.raw_window_handle()));
+            .build(Some(window_handle.as_raw()));
 
         let fallback_context_attributes =
-            ContextAttributesBuilder::new().build(Some(window_handle.raw_window_handle()));
+            ContextAttributesBuilder::new().build(Some(window_handle.as_raw()));
 
         let not_current_gl_context = unsafe {
             gl_display
@@ -88,7 +87,7 @@ impl GlContextWrapper {
         };
 
         let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            window_handle.raw_window_handle(),
+            window_handle.as_raw(),
             width,
             height,
         );
@@ -105,9 +104,6 @@ impl GlContextWrapper {
             format!("FemtoVG Renderer: Failed to make newly created OpenGL context current: {glutin_error}")
             .into()
     })?;
-
-        drop(window_handle);
-        drop(display_handle);
 
         Ok(Self { glutin_context: context, glutin_surface: surface })
     }

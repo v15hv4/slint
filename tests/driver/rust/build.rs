@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -57,6 +57,7 @@ fn main() -> std::io::Result<()> {
     //Make sure to use a consistent style
     println!("cargo:rustc-env=SLINT_STYLE=fluent");
     println!("cargo:rustc-env=SLINT_ENABLE_EXPERIMENTAL_FEATURES=1");
+    println!("cargo:rustc-env=SLINT_EMIT_DEBUG_INFO=1");
     Ok(())
 }
 
@@ -140,10 +141,11 @@ fn generate_source(
     compiler_config.include_paths = include_paths;
     compiler_config.library_paths = library_paths;
     compiler_config.style = Some(testcase.requested_style.unwrap_or("fluent").to_string());
-    let (root_component, diag, _) =
+    compiler_config.debug_info = true;
+    let (root_component, diag, loader) =
         spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
 
-    if diag.has_error() {
+    if diag.has_errors() {
         diag.print_warnings_and_exit_on_error();
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -153,6 +155,11 @@ fn generate_source(
         diag.print();
     }
 
-    generator::generate(generator::OutputFormat::Rust, output, &root_component)?;
+    generator::generate(
+        generator::OutputFormat::Rust,
+        output,
+        &root_component,
+        &loader.compiler_config,
+    )?;
     Ok(())
 }

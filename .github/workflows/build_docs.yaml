@@ -1,19 +1,28 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 # Build various demo binaries, c++ packages and documentation and publish them on the website
 name: Build docs
 
 on:
     workflow_call:
+      inputs:
+        release:
+          type: string
+          default: false
+          required: false
+          description: "Release? Enable options for building binaries for a release (i.e. apply a nightly tag, nightly version)"
+        app-id:
+          type: string
+          required: true  
 
 jobs:
     docs:
-        runs-on: ubuntu-22.04
+        runs-on: ubuntu-24.04
         env:
             # Allow deprecated warning because we are using nightly and some things might be deprecated in nightly
             # for which the stable alternative is not yet available.
-            # RUSTFLAGS: -D warnings -W deprecated
+            RUSTFLAGS: -D warnings -W deprecated
             RUSTDOCFLAGS: --html-in-header=/home/runner/work/slint/slint/docs/resources/slint-docs-highlight.html -D warnings -W deprecated
             SLINT_NO_QT: 1
             CARGO_INCREMENTAL: false
@@ -42,19 +51,10 @@ jobs:
             - name: Install mdbook-linkcheck
               run: cargo install mdbook-linkcheck || true
             - name: Install apt dependencies
-              run: sudo apt-get install doxygen clang-format
+              run: sudo apt-get install doxygen
             - name: Upgrade pip and install pipenv
               run: |
-                  python -m pip install --upgrade pip
-                  pip install --user pipenv
-            - name: Cache Pipenv virtualenv
-              uses: actions/cache@v4
-              id: pipenv-cache
-              with:
-                  path: ~/.local/share/virtualenvs
-                  key: ${{ runner.os }}-pipenv-v1-${{ hashFiles('**/Pipfile') }}
-                  restore-keys: |
-                      ${{ runner.os }}-pipenv-v1
+                  sudo apt-get install python3-pip pipenv
             - name: Remove docs from cache # Avoid stale docs
               run: |
                   rm -rf target/doc target/cppdocs api/node/docs
@@ -77,35 +77,67 @@ jobs:
                   tool_name: xtask license_header
                   level: error
                   fail_on_error: true
+            - run: sudo apt-get install reuse
             - name: Check reuse compliance
               run: cargo xtask check_reuse_compliance
 
             - name: Build Cpp docs
-              run: cargo xtask cppdocs --show-warnings
+              env:
+                RELEASE_INPUT: ${{ inputs.release }}
+              run: |
+                CPPDOCS_EXTRA_FLAGS="" 
+                if [ "$RELEASE_INPUT" != "true" ]; then
+                    CPPDOCS_EXTRA_FLAGS="--experimental"
+                fi
+                cargo xtask cppdocs --show-warnings $CPPDOCS_EXTRA_FLAGS
             - name: "Rust docs"
               run: cargo doc -p slint -p slint-build -p slint-interpreter --no-deps --all-features
             - name: "Rust android-activity and i-slint-backend-winit"
               run: |
-                  cargo doc -p i-slint-backend-android-activity -p i-slint-backend-winit -p i-slint-backend-testing --no-deps --target aarch64-linux-android --features=i-slint-backend-android-activity/native-activity,i-slint-backend-android-activity/aa-05,i-slint-backend-winit/renderer-femtovg
+                  cargo doc -p i-slint-backend-android-activity -p i-slint-backend-winit -p i-slint-backend-testing --no-deps --target aarch64-linux-android --features=i-slint-backend-android-activity/native-activity,i-slint-backend-android-activity/aa-06,i-slint-backend-winit/renderer-femtovg
                   cp -r target/aarch64-linux-android/doc/i_slint_backend_android_activity/ target/doc/
                   cp -r target/aarch64-linux-android/doc/i_slint_backend_winit/ target/doc/
                   cp -r target/aarch64-linux-android/doc/i_slint_backend_testing/ target/doc/
-            - name: "Rust QuickStart"
-              run: mdbook build
-              working-directory: docs/quickstart/rust
-            - name: "C++ QuickStart"
-              run: mdbook build
-              working-directory: docs/quickstart/cpp
-            - name: "NodeJS QuickStart"
-              run: mdbook build
-              working-directory: docs/quickstart/node
             - name: "Slint Language Documentation"
               run: cargo xtask slintdocs --show-warnings
             - name: "Node docs"
               run: |
                   npm install --ignore-scripts
                   npm run docs
-              working-directory: api/node
+              working-directory: api/node            
+
+            - name: Generate a token
+              if: ${{ github.ref == 'refs/heads/master' }}
+              id: app-token
+              uses: actions/create-github-app-token@v1
+              with:
+                app-id: ${{ inputs.app-id }}
+                private-key: ${{ secrets.READ_WRITE_PRIVATE_KEY }}
+                repositories: website
+        
+            - name: Clone website directory
+              if: ${{ github.ref == 'refs/heads/master' }}
+              uses: actions/checkout@v4
+              with:
+                repository: slint-ui/website
+                ref: prod
+                path: website
+                token: ${{ steps.app-token.outputs.token }}
+                persist-credentials: false
+      
+            - name: Generate release-docs.html and 404.html
+              if: ${{ github.ref == 'refs/heads/master' }}
+              run: |
+                mkdir -p website/output
+                cd website && go run generator/generator.go -skip-agreements
+      
+            - name: Copy release-docs.html and 404.html
+              if: ${{ github.ref == 'refs/heads/master' }}
+              run: |
+                cp website/output/release-docs.html docs/site/index.html
+                cp website/output/404.html docs/site/404.html
+                rm -rf website
+                
             - name: "Upload Docs Artifacts"
               uses: actions/upload-artifact@v4
               with:
@@ -116,11 +148,9 @@ jobs:
                       target/slintdocs/html
                       api/node/docs
                       docs/site
-                      docs/quickstart/rust/book/html
-                      docs/quickstart/cpp/book/html
-                      docs/quickstart/node/book/html
             - name: "Check for docs warnings in internal crates"
               run: cargo doc --workspace --no-deps --all-features --exclude slint-node --exclude pyslint --exclude mcu-board-support --exclude printerdemo_mcu --exclude carousel --exclude test-* --exclude plotter --exclude uefi-demo --exclude ffmpeg --exclude gstreamer-player --exclude slint-cpp --exclude slint-python
             - name: Clean cache # Don't cache docs to avoid them including removed classes being published
               run: |
-                  rm -rf target/doc target/cppdocs target/slintdocs api/node/docs docs/quickstart/rust/book docs/quickstart/cpp/book docs/quickstart/node/book
+                  rm -rf target/doc target/cppdocs target/slintdocs api/node/docs
+

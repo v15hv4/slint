@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains types that are public and re-exported in the slint-rs as well as the slint-interpreter crate as public API.
@@ -9,6 +9,7 @@ This module contains types that are public and re-exported in the slint-rs as we
 
 #[cfg(target_has_atomic = "ptr")]
 pub use crate::future::*;
+use crate::graphics::{Rgba8Pixel, SharedPixelBuffer};
 use crate::input::{KeyEventType, MouseEvent};
 use crate::item_tree::ItemTreeVTable;
 use crate::window::{WindowAdapter, WindowInner};
@@ -301,6 +302,7 @@ pub enum RenderingState {
 /// Internal trait that's used to map rendering state callbacks to either a Rust-API provided
 /// impl FnMut or a struct that invokes a C callback and implements Drop to release the closure
 /// on the C++ side.
+#[doc(hidden)]
 pub trait RenderingNotifier {
     /// Called to notify that rendering has reached a certain state.
     fn notify(&mut self, state: RenderingState, graphics_api: &GraphicsAPI);
@@ -324,6 +326,32 @@ pub enum SetRenderingNotifierError {
     AlreadySet,
 }
 
+impl core::fmt::Display for SetRenderingNotifierError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported => {
+                f.write_str("The rendering backend does not support rendering notifiers.")
+            }
+            Self::AlreadySet => f.write_str(
+                "There is already a rendering notifier set, multiple notifiers are not supported.",
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SetRenderingNotifierError {}
+
+#[cfg(feature = "raw-window-handle-06")]
+#[derive(Clone)]
+enum WindowHandleInner {
+    HandleByAdapter(alloc::rc::Rc<dyn WindowAdapter>),
+    HandleByRcRWH {
+        window_handle_provider: alloc::rc::Rc<dyn raw_window_handle_06::HasWindowHandle>,
+        display_handle_provider: alloc::rc::Rc<dyn raw_window_handle_06::HasDisplayHandle>,
+    },
+}
+
 /// This struct represents a persistent handle to a window and implements the
 /// [`raw_window_handle_06::HasWindowHandle`] and [`raw_window_handle_06::HasDisplayHandle`]
 /// traits for accessing exposing raw window and display handles.
@@ -331,7 +359,7 @@ pub enum SetRenderingNotifierError {
 #[cfg(feature = "raw-window-handle-06")]
 #[derive(Clone)]
 pub struct WindowHandle {
-    adapter: alloc::rc::Rc<dyn WindowAdapter>,
+    inner: WindowHandleInner,
 }
 
 #[cfg(feature = "raw-window-handle-06")]
@@ -339,7 +367,12 @@ impl raw_window_handle_06::HasWindowHandle for WindowHandle {
     fn window_handle<'a>(
         &'a self,
     ) -> Result<raw_window_handle_06::WindowHandle<'a>, raw_window_handle_06::HandleError> {
-        self.adapter.window_handle_06()
+        match &self.inner {
+            WindowHandleInner::HandleByAdapter(adapter) => adapter.window_handle_06(),
+            WindowHandleInner::HandleByRcRWH { window_handle_provider, .. } => {
+                window_handle_provider.window_handle()
+            }
+        }
     }
 }
 
@@ -348,7 +381,12 @@ impl raw_window_handle_06::HasDisplayHandle for WindowHandle {
     fn display_handle<'a>(
         &'a self,
     ) -> Result<raw_window_handle_06::DisplayHandle<'a>, raw_window_handle_06::HandleError> {
-        self.adapter.display_handle_06()
+        match &self.inner {
+            WindowHandleInner::HandleByAdapter(adapter) => adapter.display_handle_06(),
+            WindowHandleInner::HandleByRcRWH { display_handle_provider, .. } => {
+                display_handle_provider.display_handle()
+            }
+        }
     }
 }
 
@@ -604,7 +642,29 @@ impl Window {
     /// and display handles. This function is only accessible if you enable the `raw-window-handle-06` crate feature.
     #[cfg(feature = "raw-window-handle-06")]
     pub fn window_handle(&self) -> WindowHandle {
-        WindowHandle { adapter: self.0.window_adapter() }
+        let adapter = self.0.window_adapter();
+        if let Some((window_handle_provider, display_handle_provider)) =
+            adapter.internal(crate::InternalToken).and_then(|internal| {
+                internal.window_handle_06_rc().ok().zip(internal.display_handle_06_rc().ok())
+            })
+        {
+            WindowHandle {
+                inner: WindowHandleInner::HandleByRcRWH {
+                    window_handle_provider,
+                    display_handle_provider,
+                },
+            }
+        } else {
+            WindowHandle { inner: WindowHandleInner::HandleByAdapter(adapter) }
+        }
+    }
+
+    /// Takes a snapshot of the window contents and returns it as RGBA8 encoded pixel buffer.
+    ///
+    /// Note that this function may be slow to call. Reading from the framebuffer previously
+    /// rendered, too, may take a long time.
+    pub fn take_snapshot(&self) -> Result<SharedPixelBuffer<Rgba8Pixel>, PlatformError> {
+        self.0.window_adapter().renderer().take_snapshot()
     }
 }
 
@@ -910,6 +970,9 @@ impl core::fmt::Display for EventLoopError {
         }
     }
 }
+
+#[cfg(feature = "std")]
+impl std::error::Error for EventLoopError {}
 
 /// The platform encountered a fatal error.
 ///

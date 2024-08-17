@@ -1,4 +1,4 @@
-<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial -->
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
 
 # Slint-python (Alpha)
 
@@ -112,7 +112,7 @@ The exported component is exposed as a Python class. To access this class, you h
 options:
 
 1. Call `slint.load_file("app.slint")`. The returned object is a [namespace](https://docs.python.org/3/library/types.html#types.SimpleNamespace),
-   that provides the `MainWindow` class:
+   that provides the `MainWindow` class as well as any other explicitly exported component that inherits `Window`:
    ```python
    import slint
    components = slint.load_file("app.slint")
@@ -128,7 +128,8 @@ options:
 
    Any attribute lookup in `slint.loader` is searched for in `sys.path`. If a directory with the name exists, it is returned as a loader object, and subsequent
    attribute lookups follow the same logic. If the name matches a file with the `.slint` extension, it is automatically loaded with `load_file` and the
-   [namespace](https://docs.python.org/3/library/types.html#types.SimpleNamespace) is returned.
+   [namespace](https://docs.python.org/3/library/types.html#types.SimpleNamespace) is returned, which contains classes for each exported component that
+   inherits `Window`.
 
 ### Accessing Properties
 
@@ -153,6 +154,9 @@ export global PrinterJobQueue {
 ```python
 print("job count:", instance.PrinterJobQueue.job_count)
 ```
+
+**Note**: Global singletons are instantiated once per component. When declaring multiple components for `export` to Python,
+each instance will have their own instance of associated globals singletons.
 
 ### Setting and Invoking Callbacks
 
@@ -181,9 +185,8 @@ The callbacks in Slint are exposed as properties and that can be called as a fun
 
 ```python
 import slint
-import MyComponent from my_component_slint
 
-component = MyComponent()
+component = slint.loader.my_component.MyComponent()
 # connect to a callback
 
 def clicked():
@@ -198,9 +201,8 @@ Another way to set callbacks is to sub-class and use the `@slint.callback` decor
 
 ```python
 import slint
-import my_component_slint
 
-class Component(my_component_slint.MyComponent):
+class Component(slint.loader.my_component.MyComponent):
     @slint.callback
     def clicked(self):
         print("hello")
@@ -228,7 +230,7 @@ The types used for properties in the Slint Language each translate to specific t
 | `physical_length` | `float` | |
 | `duration` | `float` | The number of milliseconds |
 | `angle` | `float` | The angle in degrees |
-| structure | `dict` | Structures are mapped to Python dictionaries where each structure field is an item. |
+| structure | `dict`/`Struct` | When reading, structures are mapped to data classes, when writing dicts are also accepted. |
 | array | `slint.Model` | |
 
 ### Arrays and Models
@@ -262,3 +264,34 @@ When sub-classing `slint.Model`, provide the following methods:
 When adding/inserting rows, call `notify_row_added(row, count)` on the super class. Similarly, removal
 requires notifying Slint by calling `notify_row_removed(row, count)`.
 
+### Structs
+
+Structs declared in Slint and exposed to Python via `export` are accessible in the namespace returned
+when [instantiating a component](#instantiating-a-component).
+
+**`app.slint`**
+
+```slint
+export struct MyData {
+    name: string,
+    age: int
+}
+
+export component MainWindow inherits Window {
+    in-out property <MyData> data;
+}
+```
+
+**`main.py`**
+
+The exported `MyData` struct can be constructed
+
+```python
+import slint
+# Look for for `app.slint` in `sys.path`:
+main_window = slint.loader.app.MainWindow()
+
+data = slint.loader.app.MyData(name = "Simon")
+data.age = 10
+main_window.data = data
+```

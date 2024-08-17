@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use ::slint::slint;
 
@@ -31,7 +31,7 @@ fn test_serialize_deserialize_struct() {
             enum: TestEnum,
             foo: int,
         }
-        export component Test { }
+        export component Test inherits Window { }
     }
     let data = TestStruct { foo: 1, r#enum: TestEnum::World };
     let serialized = serde_json::to_string(&data).unwrap();

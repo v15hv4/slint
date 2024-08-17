@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use i_slint_compiler::{diagnostics::BuildDiagnostics, *};
 use std::error::Error;
@@ -27,19 +27,25 @@ pub fn test(testcase: &test_driver_lib::TestCase) -> Result<(), Box<dyn Error>> 
     compiler_config.include_paths = include_paths;
     compiler_config.library_paths = library_paths;
     compiler_config.style = testcase.requested_style.map(str::to_string);
-    let (root_component, diag, _) =
+    compiler_config.debug_info = true;
+    let (root_component, diag, loader) =
         spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
 
-    if diag.has_error() {
+    if diag.has_errors() {
         let vec = diag.to_string_vec();
         return Err(vec.join("\n").into());
     }
 
     let mut generated_cpp: Vec<u8> = Vec::new();
 
-    generator::generate(output_format, &mut generated_cpp, &root_component)?;
+    generator::generate(
+        output_format,
+        &mut generated_cpp,
+        &root_component,
+        &loader.compiler_config,
+    )?;
 
-    if diag.has_error() {
+    if diag.has_errors() {
         let vec = diag.to_string_vec();
         return Err(vec.join("\n").into());
     }

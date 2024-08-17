@@ -1,8 +1,9 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Make sure that the top level element of the component is always a Window
 
+use crate::diagnostics::BuildDiagnostics;
 use crate::expression_tree::{BindingExpression, BuiltinFunction, Expression};
 use crate::langtype::Type;
 use crate::namedreference::NamedReference;
@@ -16,10 +17,16 @@ pub fn ensure_window(
     component: &Rc<Component>,
     type_register: &TypeRegister,
     style_metrics: &Rc<Component>,
+    diag: &mut BuildDiagnostics,
 ) {
-    if component.root_element.borrow().builtin_type().map_or(true, |b| {
-        matches!(b.name.as_str(), "Window" | "Dialog" | "WindowItem" | "PopupWindow")
-    }) {
+    if component.inherits_popup_window.get() {
+        diag.push_error(
+            "PopupWindow cannot be the top level".into(),
+            &*component.root_element.borrow(),
+        );
+    }
+
+    if inherits_window(component) {
         return; // already a window, nothing to do
     }
 
@@ -135,4 +142,10 @@ pub fn ensure_window(
             to: Type::Brush,
         }
     });
+}
+
+pub fn inherits_window(component: &Rc<Component>) -> bool {
+    component.root_element.borrow().builtin_type().map_or(true, |b| {
+        matches!(b.name.as_str(), "Window" | "Dialog" | "WindowItem" | "PopupWindow")
+    })
 }

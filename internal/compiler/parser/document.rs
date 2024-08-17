@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use super::element::{parse_element, parse_element_content};
 use super::prelude::*;
@@ -180,12 +180,14 @@ pub fn parse_qualified_name(p: &mut impl Parser) -> bool {
 #[cfg_attr(test, parser_test)]
 /// ```test,ExportsList
 /// export { Type }
-/// export { Type, AnotherType }
+/// export { Type, AnotherType, }
 /// export { Type as Foo, AnotherType }
 /// export Foo := Item { }
 /// export struct Foo := { foo: bar }
 /// export enum Foo { bar }
 /// export * from "foo";
+/// export { Abc } from "foo";
+/// export { Abc, Efg } from "foo";
 /// ```
 fn parse_export<P: Parser>(p: &mut P, checkpoint: Option<P::Checkpoint>) -> bool {
     debug_assert_eq!(p.peek().as_str(), "export");
@@ -194,11 +196,14 @@ fn parse_export<P: Parser>(p: &mut P, checkpoint: Option<P::Checkpoint>) -> bool
     p.expect(SyntaxKind::Identifier); // "export"
     if p.test(SyntaxKind::LBrace) {
         loop {
+            if p.test(SyntaxKind::RBrace) {
+                break;
+            }
             parse_export_specifier(&mut *p);
             match p.nth(0).kind() {
                 SyntaxKind::RBrace => {
                     p.consume();
-                    return true;
+                    break;
                 }
                 SyntaxKind::Eof => {
                     p.error("Expected comma");
@@ -209,10 +214,18 @@ fn parse_export<P: Parser>(p: &mut P, checkpoint: Option<P::Checkpoint>) -> bool
                 }
                 _ => {
                     p.consume();
-                    p.error("Expected comma")
+                    p.error("Expected comma");
+                    return false;
                 }
             }
         }
+        if p.peek().as_str() == "from" {
+            let mut p = p.start_node(SyntaxKind::ExportModule);
+            p.consume(); // "from"
+            p.expect(SyntaxKind::StringLiteral);
+            p.expect(SyntaxKind::Semicolon);
+        }
+        true
     } else if p.peek().as_str() == "struct" {
         parse_struct_declaration(&mut *p, checkpoint)
     } else if p.peek().as_str() == "enum" {

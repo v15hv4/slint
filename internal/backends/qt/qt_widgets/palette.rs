@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore deinit
 
@@ -144,13 +144,13 @@ impl NativePalette {
         self.border.set(Brush::from(border));
 
         let selection_background = cpp!(unsafe[] -> u32 as "QRgb" {
-            return qApp->palette().color(QPalette::HighlightedText).rgba();
+            return qApp->palette().color(QPalette::Highlight).rgba();
         });
         let selection_background = Color::from_argb_encoded(selection_background);
         self.selection_background.set(Brush::from(selection_background));
 
         let selection_foreground = cpp!(unsafe[] -> u32 as "QRgb" {
-            return qApp->palette().color(QPalette::Text).rgba();
+            return qApp->palette().color(QPalette::HighlightedText).rgba();
         });
         let selection_foreground = Color::from_argb_encoded(selection_foreground);
         self.selection_foreground.set(Brush::from(selection_foreground));

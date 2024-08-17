@@ -73,6 +73,7 @@ Use the following `accessible-` properties to make your items interact well with
 -   **`accessible-value-minimum`** (_in_ _float_): The minimum value of the item.
 -   **`accessible-value-step`** (_in_ _float_) The smallest increment or decrement by which the current value can change. This corresponds to the step by which a handle on a slider can be dragged.
 -   **`accessible-value`** (_in_ _string_): The current value of the item.
+-   **`accessible-placeholder-text`** (_in_ _string_): A placeholder text to use when the item's value is empty. Applies to text elements.
 
 You can also use the following callbacks that are going to be called by the accessibility framework:
 
@@ -107,6 +108,7 @@ There can't be several `StandardButton`s of the same kind.
 A callback `<kind>_clicked` is automatically added for each `StandardButton` which doesn't have an explicit
 callback handler, so it can be handled from the native code: For example if there is a button of kind `cancel`,
 a `cancel_clicked` callback will be added.
+Each of these automatically-generated callbacks is an alias for the `clicked` callback of the associated `StandardButton`.
 
 ### Properties
 
@@ -737,6 +739,9 @@ and the text itself.
 -   **`stroke`** (_in_ _brush_): The brush used for the text outline (default value: `transparent`).
 -   **`stroke-width`** (_in_ _length_): The width of the text outline. If the width is zero, then a hairline stroke (1 physical pixel) will be rendered.
 -   **`stroke-style`** (_in_ _enum [`TextStrokeStyle`](enums.md#textstrokestyle)_): The style/alignment of the text outline (default value: `outside`).
+-   **`rotation-angle`** (_in_ _angle_), **`rotation-origin-x`** (_in_ _length_), **`rotation-origin-y`** (_in_ _length_):
+    Rotates the text by the given angle around the specified origin point. The default origin point is the center of the element.
+    When these properties are set, the `Text` can't have children.
 
 ### Example
 
@@ -772,6 +777,60 @@ export component Example inherits Window {
     }
 }
 ```
+
+## `Timer`
+<!-- FIXME: Timer is not really an element so it doesn't really belong in the `Builtin Elements` section. -->
+
+Use the Timer pseudo-element to schedule a callback at a given interval.
+The timer is only running when the `running` property is set to `true`. To stop or start the timer, set that property to `true` or `false`.
+It can be also set to a binding expression.
+When already running, the timer will be restarted if the `interval` property is changed.
+
+:::{note}
+The default value for `running` is `true`, so if you don't specify it, it will be running.
+:::
+
+:::{note}
+Timer is not an actual element visible in the tree, therefore it doesn't have the common properties such as `x`, `y`, `width`, `height`, etc. It also doesn't take room in a layout and cannot have any children or be inherited from.
+:::
+
+### Properties
+
+ -  **`interval`** (_in_ _duration_): The interval between timer ticks. (default value: `0ms`)
+ -  **`running`** (_in_ _bool_): `true` if the timer is running. (default value: `true`)
+
+### Callbacks
+
+ -  **`triggered()`**: Invoked every time the timer ticks (every `interval`).
+
+### Example
+
+This example shows a timer that counts down from 10 to 0 every second:
+
+```slint
+import { Button } from "std-widgets.slint";
+export component Example inherits Window {
+    property <int> value: 10;
+    timer := Timer {
+        interval: 1s;
+        running: true;
+        triggered() => {
+            value -= 1;
+            if (value == 0) {
+                self.running = false;
+            }
+        }
+    }
+    HorizontalLayout {
+        Text { text: value; }
+        Button {
+            text: "Reset";
+            clicked() => { value = 10; timer.running = true; }
+        }
+    }
+}
+```
+
 
 ## `TouchArea`
 
@@ -878,4 +937,5 @@ or smaller. The initial width can be controlled with the `preferred-width` prope
 -   **`default-font-weight`** (_in_ _int_): The font weight to use as default in text elements inside this window, that don't have their `font-weight` property set. The values range from 100 (lightest) to 900 (thickest). 400 is the normal weight.
 -   **`icon`** (_in_ _image_): The window icon shown in the title bar or the task bar on window managers supporting it.
 -   **`no-frame`** (_in_ _bool_): Whether the window should be borderless/frameless or not.
+-   **`resize-border-width`** (_in_ _length_): Size of the resize border in borderless/frameless windows (winit only for now).
 -   **`title`** (_in_ _string_): The window title that is shown in the title bar.

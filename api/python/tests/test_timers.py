@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import pytest
 from slint import slint as native
@@ -11,8 +11,8 @@ def test_timer():
     counter = 0
     def quit_after_two_invocations():
         global counter
-        counter = counter + 1
-        if counter >= 2:
+        counter = min(counter + 1, 2)
+        if counter == 2:
             native.quit_event_loop()
 
     test_timer = native.Timer()        

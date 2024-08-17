@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 #[cfg(not(feature = "libseat"))]
@@ -99,13 +99,15 @@ impl Backend {
             Some("skia-software") => crate::renderer::skia::SkiaRendererAdapter::new_software,
             #[cfg(feature = "renderer-femtovg")]
             Some("femtovg") => crate::renderer::femtovg::FemtoVGRendererAdapter::new,
-            None => crate::renderer::try_skia_then_femtovg,
+            #[cfg(feature = "renderer-software")]
+            Some("software") => crate::renderer::sw::SoftwareRendererAdapter::new,
+            None => crate::renderer::try_skia_then_femtovg_then_software,
             Some(renderer_name) => {
                 eprintln!(
                     "slint linuxkms backend: unrecognized renderer {}, falling back default",
                     renderer_name
                 );
-                crate::renderer::try_skia_then_femtovg
+                crate::renderer::try_skia_then_femtovg_then_software
             }
         };
 

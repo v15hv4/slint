@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This wasm library can be loaded from JS to load and display the content of .slint files
 #![cfg(target_arch = "wasm32")]
@@ -179,8 +179,9 @@ fn invoke_from_event_loop_wrapped_in_promise(
 
 pub fn run_in_ui_thread<F: Future<Output = ()> + 'static>(
     create_future: impl Send + FnOnce() -> F + 'static,
-) {
-    i_slint_core::future::spawn_local(create_future()).unwrap();
+) -> Result<(), String> {
+    i_slint_core::future::spawn_local(create_future()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn resource_url_mapper(

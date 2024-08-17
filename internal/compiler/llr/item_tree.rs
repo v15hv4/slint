@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use super::{EvaluationContext, Expression, ParentCtx};
 use crate::langtype::{NativeClass, Type};
@@ -71,6 +71,15 @@ pub struct GlobalComponent {
 
     /// Analysis for each properties
     pub prop_analysis: Vec<crate::object_tree::PropertyAnalysis>,
+}
+
+impl GlobalComponent {
+    pub fn must_generate(&self) -> bool {
+        !self.is_builtin
+            && (self.exported
+                || !self.functions.is_empty()
+                || self.properties.iter().any(|p| p.use_count.get() > 0))
+    }
 }
 
 /// a Reference to a property, in the context of a SubComponent
@@ -231,7 +240,8 @@ pub struct SubComponent {
     pub items: Vec<Item>,
     pub repeated: Vec<RepeatedElement>,
     pub component_containers: Vec<ComponentContainerElement>,
-    pub popup_windows: Vec<ItemTree>,
+    pub popup_windows: Vec<PopupWindow>,
+    pub timers: Vec<Timer>,
     pub sub_components: Vec<SubComponentInstance>,
     /// The initial value or binding for properties.
     /// This is ordered in the order they must be set.
@@ -253,7 +263,23 @@ pub struct SubComponent {
     /// Maps (item_index, property) to an expression
     pub accessible_prop: BTreeMap<(u32, String), MutExpression>,
 
+    /// Maps item index to a list of encoded element infos of the element  (type name, qualified ids).
+    pub element_infos: BTreeMap<u32, String>,
+
     pub prop_analysis: HashMap<PropertyReference, PropAnalysis>,
+}
+
+#[derive(Debug)]
+pub struct PopupWindow {
+    pub item_tree: ItemTree,
+    pub position: MutExpression,
+}
+
+#[derive(Debug)]
+pub struct Timer {
+    pub interval: MutExpression,
+    pub running: MutExpression,
+    pub triggered: MutExpression,
 }
 
 #[derive(Debug, Clone)]
@@ -319,17 +345,24 @@ pub struct PublicComponent {
     pub public_properties: PublicProperties,
     pub private_properties: PrivateProperties,
     pub item_tree: ItemTree,
-    pub sub_components: Vec<Rc<SubComponent>>,
-    pub globals: Vec<GlobalComponent>,
+    pub name: String,
 }
 
-impl PublicComponent {
+#[derive(Debug)]
+pub struct CompilationUnit {
+    pub public_components: Vec<PublicComponent>,
+    pub sub_components: Vec<Rc<SubComponent>>,
+    pub globals: Vec<GlobalComponent>,
+    pub has_debug_info: bool,
+}
+
+impl CompilationUnit {
     pub fn for_each_sub_components<'a>(
         &'a self,
         visitor: &mut dyn FnMut(&'a SubComponent, &EvaluationContext<'_>),
     ) {
         fn visit_component<'a>(
-            root: &'a PublicComponent,
+            root: &'a CompilationUnit,
             c: &'a SubComponent,
             visitor: &mut dyn FnMut(&'a SubComponent, &EvaluationContext<'_>),
             parent: Option<ParentCtx<'_>>,
@@ -344,14 +377,21 @@ impl PublicComponent {
                     Some(ParentCtx::new(&ctx, Some(idx as u32))),
                 );
             }
-            for x in &c.popup_windows {
-                visit_component(root, &x.root, visitor, Some(ParentCtx::new(&ctx, None)));
+            for popup in &c.popup_windows {
+                visit_component(
+                    root,
+                    &popup.item_tree.root,
+                    visitor,
+                    Some(ParentCtx::new(&ctx, None)),
+                );
             }
         }
         for c in &self.sub_components {
             visit_component(self, c, visitor, None);
         }
-        visit_component(self, &self.item_tree.root, visitor, None);
+        for p in &self.public_components {
+            visit_component(self, &p.item_tree.root, visitor, None);
+        }
     }
 
     pub fn for_each_expression<'a>(

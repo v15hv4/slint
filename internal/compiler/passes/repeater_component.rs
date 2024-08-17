@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 Make sure that the Repeated expression are just components without any children
@@ -24,6 +24,16 @@ fn create_repeater_components(component: &Rc<Component>) {
         };
         let parent_element = Rc::downgrade(elem);
         let mut elem = elem.borrow_mut();
+
+        if matches!(&elem.base_type, ElementType::Component(c) if c.parent_element.upgrade().is_some())
+        {
+            debug_assert!(std::rc::Weak::ptr_eq(
+                &parent_element,
+                &elem.base_type.as_component().parent_element
+            ));
+            // Already processed (can happen if a component is both used and exported root)
+            return;
+        }
 
         let comp = Rc::new(Component {
             root_element: Rc::new(RefCell::new(Element {

@@ -1,7 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![cfg(target_arch = "wasm32")]
+#![allow(clippy::await_holding_refcell_ref)]
 
 pub mod common;
 mod fmt;
@@ -11,12 +12,11 @@ pub mod lsp_ext;
 mod preview;
 pub mod util;
 
-use common::{LspToPreviewMessage, Result, VersionedUrl};
+use common::{DocumentCache, LspToPreviewMessage, Result, VersionedUrl};
 use i_slint_compiler::CompilerConfiguration;
 use js_sys::Function;
-pub use language::{Context, DocumentCache, RequestHandler};
+pub use language::{Context, RequestHandler};
 use lsp_types::Url;
-use serde::Serialize;
 use std::cell::RefCell;
 use std::future::Future;
 use std::io::ErrorKind;
@@ -53,9 +53,12 @@ pub struct ServerNotifier {
 }
 
 impl ServerNotifier {
-    pub fn send_notification(&self, method: String, params: impl Serialize) -> Result<()> {
+    pub fn send_notification<N: lsp_types::notification::Notification>(
+        &self,
+        params: N::Params,
+    ) -> Result<()> {
         self.send_notification
-            .call2(&JsValue::UNDEFINED, &method.into(), &to_value(&params)?)
+            .call2(&JsValue::UNDEFINED, &N::METHOD.into(), &to_value(&params)?)
             .map_err(|x| format!("Error calling send_notification: {x:?}"))?;
         Ok(())
     }
@@ -77,7 +80,7 @@ impl ServerNotifier {
     }
 
     pub fn send_message_to_preview(&self, message: LspToPreviewMessage) {
-        let _ = self.send_notification("slint/lsp_to_preview".to_string(), message);
+        let _ = self.send_notification::<LspToPreviewMessage>(message);
     }
 }
 
@@ -91,7 +94,7 @@ impl RequestHandler {
         if let Some(f) = self.0.get(&method.as_str()) {
             let param = serde_wasm_bindgen::from_value(params)
                 .map_err(|x| format!("invalid param to handle_request: {x:?}"))?;
-            let r = f(param, ctx).await?;
+            let r = f(param, ctx).await.map_err(|e| e.message)?;
             to_value(&r).map_err(|e| e.to_string().into())
         } else {
             Err("Cannot handle request".into())
@@ -217,6 +220,7 @@ pub fn create(
     Ok(SlintServer {
         ctx: Rc::new(Context {
             document_cache,
+            preview_config: RefCell::new(Default::default()),
             init_param,
             server_notifier,
             to_show: Default::default(),
@@ -295,17 +299,14 @@ impl SlintServer {
             M::RequestState { .. } => {
                 crate::language::request_state(&self.ctx);
             }
-            M::UpdateElement { label, position, properties } => {
-                send_workspace_edit(
-                    self.ctx.server_notifier.clone(),
-                    label,
-                    language::properties::update_element_properties(
-                        &self.ctx, position, properties,
-                    ),
-                );
-            }
             M::SendWorkspaceEdit { label, edit } => {
                 send_workspace_edit(self.ctx.server_notifier.clone(), label, Ok(edit));
+            }
+            M::SendShowMessage { message } => {
+                let _ = self
+                    .ctx
+                    .server_notifier
+                    .send_notification::<lsp_types::notification::ShowMessage>(message);
             }
         }
         Ok(())

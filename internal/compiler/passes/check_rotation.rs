@@ -1,12 +1,12 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::diagnostics::BuildDiagnostics;
 use crate::diagnostics::Spanned;
 use crate::langtype::ElementType;
 use crate::object_tree::Element;
 
-/// Check that the rotation is only on Image
+/// Check that the rotation is only on Image and Text
 pub fn check_rotation(doc: &crate::object_tree::Document, diag: &mut BuildDiagnostics) {
     for cmp in &doc.inner_components {
         crate::object_tree::recurse_elem_including_sub_components(cmp, &(), &mut |elem, _| {
@@ -15,7 +15,7 @@ pub fn check_rotation(doc: &crate::object_tree::Document, diag: &mut BuildDiagno
                 .iter()
                 .any(|(property_name, _)| is_property_set(&e, property_name))
             {
-                if matches!(e.native_class(), Some(native) if native.class_name != "ClippedImage") {
+                if !e.builtin_type().is_some_and(|b| matches!(b.name.as_str(), "Image" | "Text")) {
                     let span = e
                         .bindings
                         .get("rotation-angle")
@@ -23,7 +23,8 @@ pub fn check_rotation(doc: &crate::object_tree::Document, diag: &mut BuildDiagno
                         .unwrap_or_else(|| e.to_source_location());
 
                     diag.push_error_with_span(
-                        "rotation properties can only be applied to the Image element".into(),
+                        "rotation properties can only be applied to the Image or Text element"
+                            .into(),
                         span,
                     );
                 } else if has_any_children(&e) {

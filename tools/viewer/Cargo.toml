@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "slint-viewer"
@@ -48,7 +48,7 @@ renderer-winit-software = ["renderer-software"]
 ## so that the viewer can find the translation
 gettext = ["i-slint-core/gettext-rs"]
 
-default = ["backend-default", "renderer-femtovg"]
+default = ["backend-default", "renderer-femtovg", "renderer-software"]
 
 [dependencies]
 i-slint-compiler = { workspace = true }
@@ -56,13 +56,13 @@ i-slint-core = { workspace = true }
 slint-interpreter = { workspace = true, features = ["display-diagnostics", "compat-1-2", "internal", "accessibility"] }
 i-slint-backend-selector = { workspace = true }
 
-clap = { version = "4.0", features = ["derive", "wrap_help"] }
+clap = { workspace = true }
 codemap = "0.1"
 codemap-diagnostic = "0.1.1"
 notify = { version = "6.0.0", default-features = false, features = ["macos_kqueue"] }
-serde_json = "1"
+serde_json = { workspace = true }
 shlex = "1"
-spin_on = "0.1"
+spin_on = { workspace = true }
 env_logger = "0.11.0"
 itertools = { workspace = true }
 

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore singleshot
 
@@ -169,6 +169,13 @@ impl Timer {
         }
     }
 
+    /// Returns the interval of the timer.
+    /// Returns `None` if the timer is not running.
+    pub fn interval(&self) -> Option<core::time::Duration> {
+        self.id()
+            .map(|timer_id| CURRENT_TIMERS.with(|timers| timers.borrow().timers[timer_id].duration))
+    }
+
     fn id(&self) -> Option<usize> {
         self.id.get().map(|v| usize::from(v) - 1)
     }
@@ -182,7 +189,9 @@ impl Drop for Timer {
     fn drop(&mut self) {
         if let Some(id) = self.id() {
             let _ = CURRENT_TIMERS.try_with(|timers| {
-                timers.borrow_mut().remove_timer(id);
+                let callback = timers.borrow_mut().remove_timer(id);
+                // drop the callback without having CURRENT_TIMERS borrowed
+                drop(callback);
             });
         }
     }
@@ -381,13 +390,14 @@ impl TimerList {
         self.timers[new_active_timer.id].running = true;
     }
 
-    fn remove_timer(&mut self, id: usize) {
+    fn remove_timer(&mut self, id: usize) -> CallbackVariant {
         self.deactivate_timer(id);
         let t = &mut self.timers[id];
         if t.being_activated {
             t.removed = true;
+            CallbackVariant::Empty
         } else {
-            self.timers.remove(id);
+            self.timers.remove(id).callback
         }
     }
 
@@ -476,7 +486,12 @@ pub(crate) mod ffi {
         if id != 0 {
             timer.id.set(NonZeroUsize::new(id));
         }
-        timer.start(mode, core::time::Duration::from_millis(duration), move || wrap.call());
+        if duration > i64::MAX as u64 {
+            // negative duration? stop the timer
+            timer.stop();
+        } else {
+            timer.start(mode, core::time::Duration::from_millis(duration), move || wrap.call());
+        }
         timer.id.take().map(|x| usize::from(x)).unwrap_or(0)
     }
 
@@ -534,6 +549,18 @@ pub(crate) mod ffi {
         let running = timer.running();
         timer.id.take(); // Make sure that dropping the Timer doesn't unregister it. C++ will call destroy() in the destructor.
         running
+    }
+
+    /// Returns the interval in milliseconds if it is running, or -1 otherwise
+    #[no_mangle]
+    pub extern "C" fn slint_timer_interval(id: usize) -> i64 {
+        if id == 0 {
+            return -1;
+        }
+        let timer = Timer { id: Cell::new(NonZeroUsize::new(id)), _phantom: Default::default() };
+        let val = timer.interval().map_or(-1, |d| d.as_millis() as i64);
+        timer.id.take(); // Make sure that dropping the Timer doesn't unregister it. C++ will call destroy() in the destructor.
+        val
     }
 }
 
@@ -881,3 +908,47 @@ assert!(!timer.running());
  */
 #[cfg(doctest)]
 const _SINGLESHOT_START: () = ();
+
+/**
+ * Test that it's possible to start a new timer from within Drop of a timer's closure.
+ * This may happen when a timer's closure is dropped, that closure holds the last reference
+ * to a component, that component is destroyed, and the accesskit code schedules a reload_tree
+ * via a single shot.
+```rust
+i_slint_backend_testing::init_no_event_loop();
+use slint::{Timer, TimerMode};
+use std::{rc::Rc, cell::Cell, time::Duration};
+#[derive(Default)]
+struct CapturedInClosure {
+    last_fired: Option<Rc<Cell<bool>>>,
+}
+impl Drop for CapturedInClosure {
+    fn drop(&mut self) {
+        if let Some(last_fired) = self.last_fired.as_ref().cloned() {
+            Timer::single_shot(Duration::from_millis(100), move || last_fired.set(true));
+        }
+    }
+}
+
+let last_fired = Rc::new(Cell::new(false));
+
+let mut cap_in_clos = CapturedInClosure::default();
+
+let timer_to_stop = Timer::default();
+timer_to_stop.start(TimerMode::Repeated, Duration::from_millis(100), {
+    let last_fired = last_fired.clone();
+    move || {
+    cap_in_clos.last_fired = Some(last_fired.clone());
+}});
+
+assert_eq!(last_fired.get(), false);
+i_slint_core::tests::slint_mock_elapsed_time(110);
+assert_eq!(last_fired.get(), false);
+drop(timer_to_stop);
+
+i_slint_core::tests::slint_mock_elapsed_time(110);
+assert_eq!(last_fired.get(), true);
+```
+ */
+#[cfg(doctest)]
+const _TIMER_CLOSURE_DROP_STARTS_NEW_TIMER: () = ();

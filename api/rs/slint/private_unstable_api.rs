@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Module containing the private api that is used by the generated code.
 //!
@@ -127,12 +127,7 @@ pub fn debug(s: SharedString) {
     #[cfg(feature = "log")]
     log::debug!("{s}");
     #[cfg(not(feature = "log"))]
-    {
-        #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-        println!("{s}");
-        #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
-        i_slint_core::debug_log!("{s}");
-    }
+    i_slint_core::debug_log!("{s}");
 }
 
 pub fn ensure_backend() -> Result<(), crate::PlatformError> {
@@ -165,6 +160,10 @@ pub fn init_translations(domain: &str, dirname: impl Into<std::path::PathBuf>) {
     i_slint_core::translations::gettext_bindtextdomain(domain, dirname.into()).unwrap()
 }
 
+pub fn use_24_hour_format() -> bool {
+    i_slint_core::date_time::use_24_hour_format()
+}
+
 /// internal re_exports used by the macro generated
 pub mod re_exports {
     pub use alloc::boxed::Box;
@@ -184,6 +183,7 @@ pub mod re_exports {
     };
     pub use i_slint_core::animations::{animation_tick, EasingCurve};
     pub use i_slint_core::callbacks::Callback;
+    pub use i_slint_core::date_time::*;
     pub use i_slint_core::graphics::*;
     pub use i_slint_core::input::{
         key_codes::Key, FocusEvent, InputEventResult, KeyEvent, KeyEventResult, KeyboardModifiers,
@@ -207,6 +207,7 @@ pub mod re_exports {
         set_state_binding, ChangeTracker, Property, PropertyTracker, StateInfo,
     };
     pub use i_slint_core::slice::Slice;
+    pub use i_slint_core::timers::{Timer, TimerMode};
     pub use i_slint_core::window::{
         InputMethodRequest, WindowAdapter, WindowAdapterRc, WindowInner,
     };

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore backtab
 
@@ -203,6 +203,24 @@ pub trait WindowAdapterInternal {
     /// returns the color scheme used
     fn color_scheme(&self) -> ColorScheme {
         ColorScheme::Unknown
+    }
+
+    /// Re-implement this to support exposing raw window handles (version 0.6).
+    #[cfg(feature = "raw-window-handle-06")]
+    fn window_handle_06_rc(
+        &self,
+    ) -> Result<Rc<dyn raw_window_handle_06::HasWindowHandle>, raw_window_handle_06::HandleError>
+    {
+        Err(raw_window_handle_06::HandleError::NotSupported)
+    }
+
+    /// Re-implement this to support exposing raw display handles (version 0.6).
+    #[cfg(feature = "raw-window-handle-06")]
+    fn display_handle_06_rc(
+        &self,
+    ) -> Result<Rc<dyn raw_window_handle_06::HasDisplayHandle>, raw_window_handle_06::HandleError>
+    {
+        Err(raw_window_handle_06::HandleError::NotSupported)
     }
 }
 
@@ -543,7 +561,7 @@ impl WindowInner {
 
         let window_adapter = self.window_adapter();
         let mut mouse_input_state = self.mouse_input_state.take();
-        let last_top_item = mouse_input_state.top_item();
+        let last_top_item = mouse_input_state.top_item_including_delayed();
         if released_event {
             mouse_input_state =
                 crate::input::process_delayed_event(&window_adapter, mouse_input_state);
@@ -605,7 +623,7 @@ impl WindowInner {
             mouse_input_state
         };
 
-        if last_top_item != mouse_input_state.top_item() {
+        if last_top_item != mouse_input_state.top_item_including_delayed() {
             self.click_state.reset();
             self.click_state.check_repeat(event, self.ctx.0.platform.click_interval());
         }
@@ -666,14 +684,17 @@ impl WindowInner {
         }
 
         // Make Tab/Backtab handle keyboard focus
+        let extra_mod = event.modifiers.control || event.modifiers.meta || event.modifiers.alt;
         if event.text.starts_with(key_codes::Tab)
             && !event.modifiers.shift
+            && !extra_mod
             && event.event_type == KeyEventType::KeyPressed
         {
             self.focus_next_item();
         } else if (event.text.starts_with(key_codes::Backtab)
             || (event.text.starts_with(key_codes::Tab) && event.modifiers.shift))
             && event.event_type == KeyEventType::KeyPressed
+            && !extra_mod
         {
             self.focus_previous_item();
         }
@@ -903,6 +924,9 @@ impl WindowInner {
         let size = self.window_adapter().size();
         self.set_window_item_geometry(size.to_logical(self.scale_factor()).to_euclid());
         self.window_adapter().renderer().resize(size).unwrap();
+        if let Some(hook) = self.ctx.0.window_shown_hook.borrow_mut().as_mut() {
+            hook(&self.window_adapter());
+        }
         Ok(())
     }
 
@@ -1471,6 +1495,15 @@ pub mod ffi {
         window_adapter
             .internal(crate::InternalToken)
             .map_or(ColorScheme::Unknown, |x| x.color_scheme())
+    }
+
+    /// Return the default-font-size property of the WindowItem
+    #[no_mangle]
+    pub unsafe extern "C" fn slint_windowrc_default_font_size(
+        handle: *const WindowAdapterRcOpaque,
+    ) -> f32 {
+        let window_adapter = &*(handle as *const Rc<dyn WindowAdapter>);
+        window_adapter.window().0.window_item().unwrap().as_pin_ref().default_font_size().get()
     }
 
     /// Dispatch a key pressed or release event

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -67,6 +67,9 @@ fn main() {
         panic!("The detected Java version is too old. The minimum required version is Java 8. Your Java version: {version_output:?} (parsed as {java_ver})")
     }
 
+    std::fs::create_dir_all(&out_class)
+        .unwrap_or_else(|e| panic!("Cannot create output directory {out_class:?} - {e}"));
+
     // Compile the Java file into a .class file
     let o = Command::new(&javac_path)
         .arg(format!("java/{java_class}"))
@@ -108,7 +111,13 @@ fn main() {
         .unwrap_or_else(|err| panic!("Error running {d8_path:?}: {err}"));
 
     if !o.status.success() {
-        panic!("Dex conversion failed: {}", String::from_utf8_lossy(&o.stderr));
+        eprintln!("Dex conversion failed: {}", String::from_utf8_lossy(&o.stderr));
+        if java_ver >= 21 {
+            eprintln!("WARNING: JDK version 21 is known to cause an error.");
+            eprintln!("See https://github.com/slint-ui/slint/issues/4973");
+            eprintln!("Try downgrading your version of Java to something like JDK 17.");
+        }
+        panic!("Dex conversion failed");
     }
 
     println!("cargo:rerun-if-changed=java/{java_class}");

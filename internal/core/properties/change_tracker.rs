@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use super::{BindingHolder, BindingResult, BindingVTable, DependencyListHead};
 #[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
@@ -123,7 +123,7 @@ impl ChangeTracker {
         if !inner.is_null() {
             unsafe {
                 let drop = (*core::ptr::addr_of!((*inner).vtable)).drop;
-                drop(inner as *mut BindingHolder);
+                drop(inner);
             }
             self.inner.set(core::ptr::null_mut());
         }
@@ -134,7 +134,13 @@ impl ChangeTracker {
         CHANGED_NODES.with(|list| {
             let old_list = DependencyListHead::default();
             let old_list = core::pin::pin!(old_list);
+            let mut count = 0;
             while !list.is_empty() {
+                count += 1;
+                if count > 9 {
+                    crate::debug_log!("Slint: long changed callback chain detected");
+                    return;
+                }
                 DependencyListHead::swap(list.as_ref(), old_list.as_ref());
                 old_list.for_each(|node| {
                     let node = *node;

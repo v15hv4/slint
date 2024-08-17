@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Helper to do lookup in expressions
 
@@ -15,6 +15,8 @@ use crate::object_tree::{ElementRc, PropertyVisibility};
 use crate::parser::NodeOrToken;
 use crate::typeregister::TypeRegister;
 use std::cell::RefCell;
+
+mod named_colors;
 
 /// Contains information which allow to lookup identifier in expressions
 pub struct LookupCtx<'a> {
@@ -499,8 +501,14 @@ impl LookupType {
                     Some(LookupResult::Expression {
                         expression: Expression::ElementReference(Rc::downgrade(&c.root_element)),
                         deprecated: (name == "StyleMetrics"
-                            && !ctx.type_register.expose_internal_types)
-                            .then(|| "Palette".to_string()),
+                            && !ctx.type_register.expose_internal_types
+                            && c.root_element
+                                .borrow()
+                                .debug
+                                .get(0)
+                                .and_then(|x| x.node.source_file())
+                                .map_or(false, |x| x.path().starts_with("builtin:")))
+                        .then(|| "Palette".to_string()),
                     })
                 }
             }
@@ -544,7 +552,7 @@ impl LookupObject for ColorSpecific {
         _ctx: &LookupCtx,
         f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
     ) -> Option<R> {
-        for (name, c) in css_color_parser2::NAMED_COLORS.iter() {
+        for (name, c) in named_colors::named_colors().iter() {
             if let Some(r) = f(name, Self::as_result(*c)) {
                 return Some(r);
             }
@@ -552,13 +560,11 @@ impl LookupObject for ColorSpecific {
         None
     }
     fn lookup(&self, _ctx: &LookupCtx, name: &str) -> Option<LookupResult> {
-        css_color_parser2::NAMED_COLORS.get(name).map(|c| Self::as_result(*c))
+        named_colors::named_colors().get(name).map(|c| Self::as_result(*c))
     }
 }
 impl ColorSpecific {
-    fn as_result(c: css_color_parser2::Color) -> LookupResult {
-        let value =
-            ((c.a as u32 * 255) << 24) | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+    fn as_result(value: u32) -> LookupResult {
         Expression::Cast {
             from: Box::new(Expression::NumberLiteral(value as f64, Unit::None)),
             to: Type::Color,
@@ -808,16 +814,36 @@ impl LookupObject for SlintInternal {
         ctx: &LookupCtx,
         f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
     ) -> Option<R> {
-        f(
-            "color-scheme",
-            Expression::FunctionCall {
-                function: Expression::BuiltinFunctionReference(BuiltinFunction::ColorScheme, None)
-                    .into(),
-                arguments: vec![],
-                source_location: ctx.current_token.as_ref().map(|t| t.to_source_location()),
-            }
-            .into(),
-        )
+        use Expression::BuiltinFunctionReference as BFR;
+        let sl = || ctx.current_token.as_ref().map(|t| t.to_source_location());
+        None.or_else(|| {
+            f(
+                "color-scheme",
+                Expression::FunctionCall {
+                    function: BFR(BuiltinFunction::ColorScheme, None).into(),
+                    arguments: vec![],
+                    source_location: sl(),
+                }
+                .into(),
+            )
+        })
+        .or_else(|| {
+            f(
+                "use-24-hour-format",
+                Expression::FunctionCall {
+                    function: BFR(BuiltinFunction::Use24HourFormat, None).into(),
+                    arguments: vec![],
+                    source_location: sl(),
+                }
+                .into(),
+            )
+        })
+        .or_else(|| f("month-day-count", BFR(BuiltinFunction::MonthDayCount, sl()).into()))
+        .or_else(|| f("month-offset", BFR(BuiltinFunction::MonthOffset, sl()).into()))
+        .or_else(|| f("format-date", BFR(BuiltinFunction::FormatDate, sl()).into()))
+        .or_else(|| f("date-now", BFR(BuiltinFunction::DateNow, sl()).into()))
+        .or_else(|| f("valid-date", BFR(BuiltinFunction::ValidDate, sl()).into()))
+        .or_else(|| f("parse-date", BFR(BuiltinFunction::ParseDate, sl()).into()))
     }
 }
 
@@ -936,6 +962,12 @@ impl LookupObject for Expression {
                 Type::Brush | Type::Color => ColorExpression(self).for_each_entry(ctx, f),
                 Type::Image => ImageExpression(self).for_each_entry(ctx, f),
                 Type::Array(_) => ArrayExpression(self).for_each_entry(ctx, f),
+                Type::Float32 | Type::Int32 | Type::Percent => {
+                    NumberExpression(self).for_each_entry(ctx, f)
+                }
+                ty if ty.as_unit_product().is_some() => {
+                    NumberWithUnitExpression(self).for_each_entry(ctx, f)
+                }
                 _ => None,
             },
         }
@@ -955,6 +987,12 @@ impl LookupObject for Expression {
                 Type::Brush | Type::Color => ColorExpression(self).lookup(ctx, name),
                 Type::Image => ImageExpression(self).lookup(ctx, name),
                 Type::Array(_) => ArrayExpression(self).lookup(ctx, name),
+                Type::Float32 | Type::Int32 | Type::Percent => {
+                    NumberExpression(self).lookup(ctx, name)
+                }
+                ty if ty.as_unit_product().is_some() => {
+                    NumberWithUnitExpression(self).lookup(ctx, name)
+                }
                 _ => None,
             },
         }
@@ -1078,5 +1116,79 @@ impl<'a> LookupObject for ArrayExpression<'a> {
             })
         };
         None.or_else(|| f("length", member_function(BuiltinFunction::ArrayLength)))
+    }
+}
+
+/// An expression of type int or float
+struct NumberExpression<'a>(&'a Expression);
+impl<'a> LookupObject for NumberExpression<'a> {
+    fn for_each_entry<R>(
+        &self,
+        ctx: &LookupCtx,
+        f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
+    ) -> Option<R> {
+        let member_function = |f: BuiltinFunction| {
+            LookupResult::from(Expression::MemberFunction {
+                base: Box::new(self.0.clone()),
+                base_node: ctx.current_token.clone(), // Note that this is not the base_node, but the function's node
+                member: Box::new(Expression::BuiltinFunctionReference(
+                    f,
+                    ctx.current_token.as_ref().map(|t| t.to_source_location()),
+                )),
+            })
+        };
+
+        None.or_else(|| f("round", member_function(BuiltinFunction::Round)))
+            .or_else(|| f("ceil", member_function(BuiltinFunction::Ceil)))
+            .or_else(|| f("floor", member_function(BuiltinFunction::Floor)))
+            .or_else(|| f("sqrt", member_function(BuiltinFunction::Sqrt)))
+            .or_else(|| f("asin", member_function(BuiltinFunction::ASin)))
+            .or_else(|| f("acos", member_function(BuiltinFunction::ACos)))
+            .or_else(|| f("atan", member_function(BuiltinFunction::ATan)))
+            .or_else(|| f("log", member_function(BuiltinFunction::Log)))
+            .or_else(|| f("pow", member_function(BuiltinFunction::Pow)))
+            .or_else(|| NumberWithUnitExpression(self.0).for_each_entry(ctx, f))
+    }
+}
+
+/// An expression of any numerical value with an unit
+struct NumberWithUnitExpression<'a>(&'a Expression);
+impl<'a> LookupObject for NumberWithUnitExpression<'a> {
+    fn for_each_entry<R>(
+        &self,
+        ctx: &LookupCtx,
+        f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
+    ) -> Option<R> {
+        let member_macro = |f: BuiltinMacroFunction| {
+            LookupResult::from(Expression::MemberFunction {
+                base: Box::new(self.0.clone()),
+                base_node: ctx.current_token.clone(), // Note that this is not the base_node, but the function's node
+                member: Box::new(Expression::BuiltinMacroReference(f, ctx.current_token.clone())),
+            })
+        };
+
+        None.or_else(|| f("mod", member_macro(BuiltinMacroFunction::Mod)))
+            .or_else(|| f("clamp", member_macro(BuiltinMacroFunction::Clamp)))
+            .or_else(|| f("abs", member_macro(BuiltinMacroFunction::Abs)))
+            .or_else(|| f("max", member_macro(BuiltinMacroFunction::Max)))
+            .or_else(|| f("min", member_macro(BuiltinMacroFunction::Min)))
+            .or_else(|| {
+                if self.0.ty() != Type::Angle {
+                    return None;
+                }
+                let member_function = |f: BuiltinFunction| {
+                    LookupResult::from(Expression::MemberFunction {
+                        base: Box::new(self.0.clone()),
+                        base_node: ctx.current_token.clone(), // Note that this is not the base_node, but the function's node
+                        member: Box::new(Expression::BuiltinFunctionReference(
+                            f,
+                            ctx.current_token.as_ref().map(|t| t.to_source_location()),
+                        )),
+                    })
+                };
+                None.or_else(|| f("sin", member_function(BuiltinFunction::Sin)))
+                    .or_else(|| f("cos", member_function(BuiltinFunction::Cos)))
+                    .or_else(|| f("tan", member_function(BuiltinFunction::Tan)))
+            })
     }
 }

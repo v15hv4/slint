@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 cmake_minimum_required(VERSION 3.21)
 # Select C++ and C as languages, as Corrosion needs ${CMAKE_C_COMPILER}
@@ -34,6 +34,7 @@ function(define_cargo_feature cargo_feature description default)
     # turn foo-bar into SLINT_FEATURE_FOO_BAR
     string(TOUPPER "${cargo_feature}" cmake_option)
     string(REPLACE "-" "_" cmake_option "${cmake_option}")
+    list(APPEND public_cmake_features ${cmake_option})
     set(cmake_option "SLINT_FEATURE_${cmake_option}")
     option("${cmake_option}" "${description}" ${default})
 
@@ -42,6 +43,7 @@ function(define_cargo_feature cargo_feature description default)
     endif()
 
     set(features "${features}" PARENT_SCOPE)
+    set(public_cmake_features "${public_cmake_features}" PARENT_SCOPE)
     add_feature_info(${cmake_option} ${cmake_option} ${description})
 endfunction()
 
@@ -49,6 +51,7 @@ function(define_cargo_dependent_feature cargo_feature description default depend
     # turn foo-bar into SLINT_FEATURE_FOO_BAR
     string(TOUPPER "${cargo_feature}" cmake_option)
     string(REPLACE "-" "_" cmake_option "${cmake_option}")
+    list(APPEND public_cmake_features ${cmake_option})
     set(cmake_option "SLINT_FEATURE_${cmake_option}")
     cmake_dependent_option("${cmake_option}" "${description}" ${default} ${depends_condition} OFF)
 
@@ -57,11 +60,12 @@ function(define_cargo_dependent_feature cargo_feature description default depend
     endif()
 
     set(features "${features}" PARENT_SCOPE)
+    set(public_cmake_features "${public_cmake_features}" PARENT_SCOPE)
     add_feature_info(${cmake_option} ${cmake_option} ${description})
 endfunction()
 
 # Features that are mapped to features in the Rust crate. These and their
-# defaults need to be kept in sync with the Rust bit.
+# defaults need to be kept in sync with the Rust bit (cpp/Cargo.toml and cbindgen.rs)
 
 define_cargo_feature(freestanding "Enable use of freestanding environment. This is only for bare-metal systems. Most other features are incompatible with this one" OFF)
 
@@ -106,6 +110,7 @@ define_cargo_dependent_feature(gettext "Enable support of translations using get
 define_cargo_dependent_feature(accessibility "Enable integration with operating system provided accessibility APIs" ON "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(testing "Enable support for testing API (experimental)" ON "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_feature(experimental "Enable experimental features. (No backward compatibility guarantees)" OFF)
+define_cargo_dependent_feature(system-testing "Enable system testing support (experimental)" OFF "SLINT_FEATURE_EXPERIMENTAL AND NOT SLINT_FEATURE_FREESTANDING")
 
 if (SLINT_BUILD_RUNTIME)
     if(SLINT_FEATURE_COMPILER AND NOT SLINT_COMPILER)
@@ -156,6 +161,19 @@ if (SLINT_BUILD_RUNTIME)
     if (MSVC)
         target_compile_options(Slint INTERFACE /bigobj)
     endif()
+
+    foreach(feature ${public_cmake_features})
+        set(cmake_option "SLINT_FEATURE_${feature}")
+        if(${cmake_option})
+            list(APPEND enabled_features ${feature})
+        else()
+            list(APPEND disabled_features ${feature})
+        endif()
+    endforeach()
+    set_property(TARGET Slint APPEND PROPERTY SLINT_ENABLED_FEATURES "${enabled_features}")
+    set_property(TARGET Slint APPEND PROPERTY SLINT_DISABLED_FEATURES "${disabled_features}")
+    set_property(TARGET Slint APPEND PROPERTY EXPORT_PROPERTIES "SLINT_ENABLED_FEATURES")
+    set_property(TARGET Slint APPEND PROPERTY EXPORT_PROPERTIES "SLINT_DISABLED_FEATURES")
 
     if (SLINT_FEATURE_FREESTANDING)
         if (ESP_PLATFORM)
@@ -415,7 +433,7 @@ if(SLINT_BUILD_RUNTIME)
 
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Slint/SlintConfigVersion.cmake
-        VERSION 1.6.0
+        VERSION 1.8.0
         COMPATIBILITY SameMinorVersion
     )
 
@@ -432,7 +450,7 @@ set(CPACK_PACKAGE_NAME "Slint-cpp")
 set(CPACK_PACKAGE_VENDOR "Slint")
 set(CPACK_VERBATIM_VARIABLES true)
 set(CPACK_PACKAGE_VERSION_MAJOR 1)
-set(CPACK_PACKAGE_VERSION_MINOR 6)
+set(CPACK_PACKAGE_VERSION_MINOR 8)
 set(CPACK_PACKAGE_VERSION_PATCH 0)
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://slint.dev")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE.md")

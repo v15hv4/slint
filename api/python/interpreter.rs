@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use slint_interpreter::{ComponentHandle, Value};
+
+use i_slint_compiler::langtype::Type;
 
 use indexmap::IndexMap;
 use pyo3::gc::PyVisit;
@@ -17,15 +19,15 @@ use pyo3::PyTraverseError;
 use crate::errors::{
     PyGetPropertyError, PyInvokeError, PyPlatformError, PySetCallbackError, PySetPropertyError,
 };
-use crate::value::PyValue;
+use crate::value::{PyStruct, PyValue};
 
 #[pyclass(unsendable)]
-pub struct ComponentCompiler {
-    compiler: slint_interpreter::ComponentCompiler,
+pub struct Compiler {
+    compiler: slint_interpreter::Compiler,
 }
 
 #[pymethods]
-impl ComponentCompiler {
+impl Compiler {
     #[new]
     fn py_new() -> PyResult<Self> {
         Ok(Self { compiler: Default::default() })
@@ -61,28 +63,19 @@ impl ComponentCompiler {
         self.compiler.set_library_paths(libraries)
     }
 
-    #[getter]
-    fn get_diagnostics(&self) -> Vec<PyDiagnostic> {
-        self.compiler.diagnostics().iter().map(|diag| PyDiagnostic(diag.clone())).collect()
-    }
-
     #[setter]
     fn set_translation_domain(&mut self, domain: String) {
         self.compiler.set_translation_domain(domain)
     }
 
-    fn build_from_path(&mut self, path: PathBuf) -> Option<ComponentDefinition> {
-        spin_on::spin_on(self.compiler.build_from_path(path))
-            .map(|definition| ComponentDefinition { definition })
+    fn build_from_path(&mut self, path: PathBuf) -> CompilationResult {
+        CompilationResult { result: spin_on::spin_on(self.compiler.build_from_path(path)) }
     }
 
-    fn build_from_source(
-        &mut self,
-        source_code: String,
-        path: PathBuf,
-    ) -> Option<ComponentDefinition> {
-        spin_on::spin_on(self.compiler.build_from_source(source_code, path))
-            .map(|definition| ComponentDefinition { definition })
+    fn build_from_source(&mut self, source_code: String, path: PathBuf) -> CompilationResult {
+        CompilationResult {
+            result: spin_on::spin_on(self.compiler.build_from_source(source_code, path)),
+        }
     }
 }
 
@@ -133,6 +126,67 @@ pub enum PyDiagnosticLevel {
 }
 
 #[pyclass(unsendable)]
+pub struct CompilationResult {
+    result: slint_interpreter::CompilationResult,
+}
+
+#[pymethods]
+impl CompilationResult {
+    #[getter]
+    fn component_names(&self) -> Vec<String> {
+        self.result.component_names().map(ToString::to_string).collect()
+    }
+
+    fn component(&self, name: &str) -> Option<ComponentDefinition> {
+        self.result.component(name).map(|definition| ComponentDefinition { definition })
+    }
+
+    #[getter]
+    fn get_diagnostics(&self) -> Vec<PyDiagnostic> {
+        self.result.diagnostics().map(|diag| PyDiagnostic(diag.clone())).collect()
+    }
+
+    #[getter]
+    fn structs_and_enums(&self, py: Python<'_>) -> HashMap<String, PyObject> {
+        let structs_and_enums =
+            self.result.structs_and_enums(i_slint_core::InternalToken {}).collect::<Vec<_>>();
+
+        fn convert_type(py: Python<'_>, ty: &Type) -> Option<(String, PyObject)> {
+            match ty {
+                Type::Struct { fields, name: Some(name), node: Some(_), .. } => {
+                    let struct_instance = PyStruct::from(slint_interpreter::Struct::from_iter(
+                        fields.iter().map(|(name, field_type)| {
+                            (
+                                name.to_string(),
+                                slint_interpreter::default_value_for_type(field_type),
+                            )
+                        }),
+                    ));
+
+                    return Some((name.to_string(), struct_instance.into_py(py)));
+                }
+                Type::Enumeration(_en) => {
+                    // TODO
+                }
+                _ => {}
+            }
+            None
+        }
+
+        structs_and_enums
+            .iter()
+            .filter_map(|ty| convert_type(py, ty))
+            .into_iter()
+            .collect::<HashMap<String, PyObject>>()
+    }
+
+    #[getter]
+    fn named_exports(&self) -> Vec<(String, String)> {
+        self.result.named_exports(i_slint_core::InternalToken {}).cloned().collect::<Vec<_>>()
+    }
+}
+
+#[pyclass(unsendable)]
 struct ComponentDefinition {
     definition: slint_interpreter::ComponentDefinition,
 }
@@ -155,6 +209,11 @@ impl ComponentDefinition {
     }
 
     #[getter]
+    fn functions(&self) -> Vec<String> {
+        self.definition.functions().collect()
+    }
+
+    #[getter]
     fn globals(&self) -> Vec<String> {
         self.definition.globals().collect()
     }
@@ -167,6 +226,10 @@ impl ComponentDefinition {
 
     fn global_callbacks(&self, name: &str) -> Option<Vec<String>> {
         self.definition.global_callbacks(name).map(|callbackiter| callbackiter.collect())
+    }
+
+    fn global_functions(&self, name: &str) -> Option<Vec<String>> {
+        self.definition.global_functions(name).map(|functioniter| functioniter.collect())
     }
 
     fn create(&self) -> Result<ComponentInstance, crate::errors::PyPlatformError> {

@@ -3,7 +3,7 @@
 
 [package]
 name = "_7guis"
-version = "1.6.0"
+version = "1.8.0"
 authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 publish = false
@@ -13,10 +13,6 @@ rust-version.workspace = true
 [[bin]]
 path = "booker.rs"
 name = "booker"
-
-[[bin]]
-path = "timer.rs"
-name = "timer"
 
 [[bin]]
 path = "crud.rs"

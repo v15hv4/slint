@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore singleshot
 
@@ -7,6 +7,7 @@
 
 #include <chrono>
 
+#include <optional>
 #include <slint_timer_internal.h>
 
 namespace slint {
@@ -29,9 +30,9 @@ struct Timer
     template<std::invocable F>
     Timer(std::chrono::milliseconds interval, F callback)
         : id(cbindgen_private::slint_timer_start(
-                0, TimerMode::Repeated, interval.count(),
-                [](void *data) { (*reinterpret_cast<F *>(data))(); }, new F(std::move(callback)),
-                [](void *data) { delete reinterpret_cast<F *>(data); }))
+                  0, TimerMode::Repeated, interval.count(),
+                  [](void *data) { (*reinterpret_cast<F *>(data))(); }, new F(std::move(callback)),
+                  [](void *data) { delete reinterpret_cast<F *>(data); }))
     {
     }
     Timer(const Timer &) = delete;
@@ -59,6 +60,16 @@ struct Timer
     void restart() { cbindgen_private::slint_timer_restart(id); }
     /// Returns true if the timer is running; false otherwise.
     bool running() const { return cbindgen_private::slint_timer_running(id); }
+    /// Returns the interval of the timer.
+    /// Returns `nullopt` if the timer is not running.
+    std::optional<std::chrono::milliseconds> interval() const
+    {
+        int64_t val = cbindgen_private::slint_timer_interval(id);
+        if (val < 0) {
+            return std::nullopt;
+        }
+        return std::chrono::milliseconds(val);
+    }
 
     /// Call the callback after the given duration.
     template<std::invocable F>

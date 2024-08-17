@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // Test that the Slint event loop processes libuv's events.
 
@@ -65,9 +65,9 @@ test.serial('quit event loop on last window closed with callback', async (t) => 
         width: 300px;
         height: 300px;
     }`, "");
-    t.not(definition, null);
+    t.not(definition.App, null);
 
-    let instance = definition!.create() as any;
+    let instance = definition.App!.create() as any;
     t.not(instance, null);
 
     instance.window().show();

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use i_slint_compiler::diagnostics::{DiagnosticLevel, SourceFile, Spanned};
 use i_slint_compiler::langtype::{ElementType, Type};
@@ -7,7 +7,6 @@ use i_slint_compiler::lookup::LookupCtx;
 use i_slint_compiler::object_tree;
 use i_slint_compiler::parser::{syntax_nodes, SyntaxKind, SyntaxNode, SyntaxToken};
 use i_slint_compiler::parser::{TextRange, TextSize};
-use i_slint_compiler::typeloader::TypeLoader;
 use i_slint_compiler::typeregister::TypeRegister;
 
 use crate::common;
@@ -45,6 +44,17 @@ pub fn map_range(sf: &SourceFile, range: TextRange) -> lsp_types::Range {
     lsp_types::Range::new(map_position(sf, range.start()), map_position(sf, range.end()))
 }
 
+pub fn map_to_offset(sf: &SourceFile, position: lsp_types::Position) -> usize {
+    sf.offset(
+        usize::try_from(position.line).unwrap() + 1,
+        usize::try_from(position.character).unwrap() + 1,
+    )
+}
+
+pub fn map_to_offsets(sf: &SourceFile, range: lsp_types::Range) -> (usize, usize) {
+    (map_to_offset(sf, range.start), map_to_offset(sf, range.end))
+}
+
 // Find the last token that is not a Whitespace in a `SyntaxNode`. May return
 // `None` if the node contains no tokens or they are all Whitespace.
 pub fn last_non_ws_token(node: &SyntaxNode) -> Option<SyntaxToken> {
@@ -55,7 +65,7 @@ pub fn last_non_ws_token(node: &SyntaxNode) -> Option<SyntaxToken> {
             break;
         }
 
-        if t.kind() != SyntaxKind::Whitespace {
+        if t.kind() != SyntaxKind::Whitespace && t.kind() != SyntaxKind::Eof {
             last_non_ws = Some(t.clone());
         }
         token = t.next_token();
@@ -126,17 +136,17 @@ impl ExpressionContextInfo {
 
 /// Run the function with the LookupCtx associated with the token
 pub fn with_lookup_ctx<R>(
-    type_loader: &TypeLoader,
+    document_cache: &common::DocumentCache,
     node: SyntaxNode,
     f: impl FnOnce(&mut LookupCtx) -> R,
 ) -> Option<R> {
     let expr_context_info = lookup_expression_context(node)?;
-    with_property_lookup_ctx::<R>(type_loader, &expr_context_info, f)
+    with_property_lookup_ctx::<R>(document_cache, &expr_context_info, f)
 }
 
 /// Run the function with the LookupCtx associated with the token
 pub fn with_property_lookup_ctx<R>(
-    type_loader: &TypeLoader,
+    document_cache: &common::DocumentCache,
     expr_context_info: &ExpressionContextInfo,
     f: impl FnOnce(&mut LookupCtx) -> R,
 ) -> Option<R> {
@@ -145,10 +155,10 @@ pub fn with_property_lookup_ctx<R>(
         expr_context_info.property_name.as_str(),
         expr_context_info.is_animate,
     );
-    let global_tr = type_loader.global_type_registry.borrow();
+    let global_tr = document_cache.global_type_registry();
     let tr = element
         .source_file()
-        .and_then(|sf| type_loader.get_document(sf.path()))
+        .and_then(|sf| document_cache.get_document_for_source_file(sf))
         .map(|doc| &doc.local_registry)
         .unwrap_or(&global_tr);
 
@@ -171,7 +181,7 @@ pub fn with_property_lookup_ctx<R>(
         loop {
             scope.push(it.clone());
             if let Some(c) = it.clone().borrow().children.iter().find(|c| {
-                c.borrow().debug.first().map_or(false, |n| n.0.text_range().contains(offset))
+                c.borrow().debug.first().map_or(false, |n| n.node.text_range().contains(offset))
             }) {
                 it = c.clone();
             } else {
@@ -204,6 +214,7 @@ pub fn with_property_lookup_ctx<R>(
     lookup_context.property_name = Some(prop_name);
     lookup_context.property_type = ty.unwrap_or_default();
     lookup_context.component_scope = &scope;
+    lookup_context.current_token = Some((**element).clone().into());
 
     if let Some(cb) = element
         .CallbackConnection()
@@ -305,7 +316,6 @@ fn to_lsp_diag_level(level: DiagnosticLevel) -> lsp_types::DiagnosticSeverity {
 mod tests {
     use super::*;
 
-    use crate::language;
     use crate::language::test::loaded_document_cache;
 
     #[test]
@@ -319,16 +329,13 @@ mod tests {
             .to_string(),
         );
 
-        let window =
-            language::element_at_position(&dc.documents, &url, &lsp_types::Position::new(0, 30));
+        let window = dc.element_at_position(&url, &lsp_types::Position::new(0, 30));
         assert_eq!(find_element_indent(&window.unwrap()), None);
 
-        let vbox =
-            language::element_at_position(&dc.documents, &url, &lsp_types::Position::new(1, 4));
+        let vbox = dc.element_at_position(&url, &lsp_types::Position::new(1, 4));
         assert_eq!(find_element_indent(&vbox.unwrap()), Some("    ".to_string()));
 
-        let label =
-            language::element_at_position(&dc.documents, &url, &lsp_types::Position::new(2, 17));
+        let label = dc.element_at_position(&url, &lsp_types::Position::new(2, 17));
         assert_eq!(find_element_indent(&label.unwrap()), Some("        ".to_string()));
     }
 }

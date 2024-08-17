@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cspell:ignore descendents qobject qwidget
 
@@ -320,6 +320,7 @@ cpp! {{
                     i_slint_core::items::AccessibleRole::Tree => QAccessible_Role_Tree,
                     i_slint_core::items::AccessibleRole::TextInput => QAccessible_Role_EditableText,
                     i_slint_core::items::AccessibleRole::Switch => QAccessible_Role_CheckBox,
+                    _ => QAccessible_Role_NoRole,
                 }
             });
         }

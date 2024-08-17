@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
  This module contains the intermediate representation of the code in the form of an object tree
@@ -31,7 +31,7 @@ macro_rules! unwrap_or_continue {
         match $e {
             Some(x) => x,
             None => {
-                debug_assert!($diag.has_error()); // error should have been reported at parsing time
+                debug_assert!($diag.has_errors()); // error should have been reported at parsing time
                 continue;
             }
         }
@@ -44,12 +44,19 @@ pub struct Document {
     pub node: Option<syntax_nodes::Document>,
     pub inner_components: Vec<Rc<Component>>,
     pub inner_types: Vec<Type>,
-    pub root_component: Rc<Component>,
     pub local_registry: TypeRegister,
     /// A list of paths to .ttf/.ttc files that are supposed to be registered on
     /// startup for custom font use.
     pub custom_fonts: Vec<(String, crate::parser::SyntaxToken)>,
     pub exports: Exports,
+
+    /// Map of resources that should be embedded in the generated code, indexed by their absolute path on
+    /// disk on the build system
+    pub embedded_file_resources:
+        RefCell<HashMap<String, crate::embedded_resources::EmbeddedResources>>,
+
+    /// The list of used extra types used recursively.
+    pub used_types: RefCell<UsedSubTypes>,
 }
 
 impl Document {
@@ -84,7 +91,7 @@ impl Document {
             if let Type::Struct { name, .. } = &mut ty {
                 *name = parser::identifier_text(&n.DeclaredIdentifier());
             } else {
-                assert!(diag.has_error());
+                assert!(diag.has_errors());
                 return;
             }
             local_registry.insert_type(ty.clone());
@@ -95,7 +102,7 @@ impl Document {
                             local_registry: &mut TypeRegister,
                             inner_types: &mut Vec<Type>| {
             let Some(name) = parser::identifier_text(&n.DeclaredIdentifier()) else {
-                assert!(diag.has_error());
+                assert!(diag.has_errors());
                 return;
             };
             let mut existing_names = HashSet::new();
@@ -156,23 +163,6 @@ impl Document {
         }
         let mut exports = Exports::from_node(&node, &inner_components, &local_registry, diag);
         exports.add_reexports(reexports, diag);
-
-        let root_component = exports
-            .last_exported_component
-            .clone()
-            .or_else(|| {
-                node.ImportSpecifier()
-                    .last()
-                    .and_then(|import| {
-                        crate::typeloader::ImportedName::extract_imported_names(&import).last()
-                    })
-                    .and_then(|import| local_registry.lookup_element(&import.internal_name).ok())
-                    .and_then(|c| match c {
-                        ElementType::Component(c) => Some(c),
-                        _ => None,
-                    })
-            })
-            .unwrap_or_default();
 
         let custom_fonts = foreign_imports
             .into_iter()
@@ -239,12 +229,41 @@ impl Document {
 
         Document {
             node: Some(node),
-            root_component,
             inner_components,
             inner_types,
             local_registry,
             custom_fonts,
             exports,
+            embedded_file_resources: Default::default(),
+            used_types: Default::default(),
+        }
+    }
+
+    pub fn exported_roots(&self) -> impl DoubleEndedIterator<Item = Rc<Component>> + '_ {
+        self.exports.iter().filter_map(|e| e.1.as_ref().left()).filter(|c| !c.is_global()).cloned()
+    }
+
+    /// This is the component that is going to be instantiated by the interpreter
+    pub fn last_exported_component(&self) -> Option<Rc<Component>> {
+        self.exports
+            .iter()
+            .filter_map(|e| Some((&e.0.name_ident, e.1.as_ref().left()?)))
+            .filter(|(_, c)| !c.is_global())
+            .max_by_key(|(n, _)| n.text_range().end())
+            .map(|(_, c)| c.clone())
+    }
+
+    /// visit all root and used component (including globals)
+    pub fn visit_all_used_components(&self, mut v: impl FnMut(&Rc<Component>)) {
+        let used_types = self.used_types.borrow();
+        for c in &used_types.sub_components {
+            v(c);
+        }
+        for c in self.exported_roots() {
+            v(&c);
+        }
+        for c in &used_types.globals {
+            v(c);
         }
     }
 }
@@ -256,6 +275,13 @@ pub struct PopupWindow {
     pub y: NamedReference,
     pub close_on_click: bool,
     pub parent_element: ElementRc,
+}
+
+#[derive(Debug, Clone)]
+pub struct Timer {
+    pub interval: NamedReference,
+    pub triggered: NamedReference,
+    pub running: NamedReference,
 }
 
 type ChildrenInsertionPoint = (ElementRc, usize, syntax_nodes::ChildrenPlaceholder);
@@ -318,11 +344,6 @@ pub struct Component {
     /// optimized away, but their properties may still be in use
     pub optimized_elements: RefCell<Vec<ElementRc>>,
 
-    /// Map of resources that should be embedded in the generated code, indexed by their absolute path on
-    /// disk on the build system
-    pub embedded_file_resources:
-        RefCell<HashMap<String, crate::embedded_resources::EmbeddedResources>>,
-
     /// The layout constraints of the root item
     pub root_constraints: RefCell<LayoutConstraints>,
 
@@ -332,10 +353,8 @@ pub struct Component {
 
     pub init_code: RefCell<InitCode>,
 
-    /// The list of used extra types used (recursively) by this root component.
-    /// (This only make sense on the root component)
-    pub used_types: RefCell<UsedSubTypes>,
     pub popup_windows: RefCell<Vec<PopupWindow>>,
+    pub timers: RefCell<Vec<Timer>>,
 
     /// This component actually inherits PopupWindow (although that has been changed to a Window by the lower_popups pass)
     pub inherits_popup_window: Cell<bool>,
@@ -347,10 +366,6 @@ pub struct Component {
     /// The list of properties (name and type) declared as private in the component.
     /// This is used to issue better error in the generated code if the property is used.
     pub private_properties: RefCell<Vec<(String, Type)>>,
-
-    /// This is the main entry point for the code generators. Such a component
-    /// should have the full API, etc.
-    pub is_root_component: Cell<bool>,
 }
 
 impl Component {
@@ -383,7 +398,12 @@ impl Component {
         let c = Rc::new(c);
         let weak = Rc::downgrade(&c);
         recurse_elem(&c.root_element, &(), &mut |e, _| {
-            e.borrow_mut().enclosing_component = weak.clone()
+            e.borrow_mut().enclosing_component = weak.clone();
+            if let Some(qualified_id) =
+                e.borrow_mut().debug.first_mut().and_then(|x| x.qualified_id.as_mut())
+            {
+                *qualified_id = format!("{}::{}", c.id, qualified_id);
+            }
         });
         c
     }
@@ -397,14 +417,6 @@ impl Component {
         }
     }
 
-    pub fn visible_in_public_api(&self) -> bool {
-        if self.is_global() {
-            !self.exported_global_names.borrow().is_empty()
-        } else {
-            self.parent_element.upgrade().is_none() && self.is_root_component.get()
-        }
-    }
-
     /// Returns the names of aliases to global singletons, exactly as
     /// specified in the .slint markup (not normalized).
     pub fn global_aliases(&self) -> Vec<String> {
@@ -414,12 +426,6 @@ impl Component {
             .filter(|name| name.as_str() != self.root_element.borrow().id)
             .map(|name| name.original_name())
             .collect()
-    }
-
-    pub fn is_sub_component(&self) -> bool {
-        !self.is_root_component.get()
-            && self.parent_element.upgrade().is_none()
-            && !self.is_global()
     }
 
     // Number of repeaters in this component, including sub-components
@@ -589,6 +595,34 @@ impl GeometryProps {
 
 pub type BindingsMap = BTreeMap<String, RefCell<BindingExpression>>;
 
+#[derive(Clone)]
+pub struct ElementDebugInfo {
+    // The id qualified with the enclosing component name. Given `foo := Bar {}` this is `EnclosingComponent::foo`
+    pub qualified_id: Option<String>,
+    pub type_name: String,
+    pub node: syntax_nodes::Element,
+    // Field to indicate wether this element was a layout that had
+    // been lowered into a rectangle in the lower_layouts pass.
+    pub layout: Option<crate::layout::Layout>,
+    /// Set to true if the ElementDebugInfo following this one in the debug vector
+    /// in Element::debug is the last one and the next entry belongs to an other element.
+    /// This can happen as a result of rectangle optimization, for example.
+    pub element_boundary: bool,
+}
+
+impl ElementDebugInfo {
+    // Returns a comma separate string that encodes the element type name (`Rectangle`, `MyButton`, etc.)
+    // and the qualified id (`SurroundingComponent::my-id`).
+    fn encoded_element_info(&self) -> String {
+        let mut info = self.type_name.clone();
+        info.push(',');
+        if let Some(id) = self.qualified_id.as_ref() {
+            info.push_str(id);
+        }
+        info
+    }
+}
+
 /// An Element is an instantiation of a Component
 #[derive(Default)]
 pub struct Element {
@@ -656,21 +690,19 @@ pub struct Element {
 
     /// Debug information about this element.
     ///
-    /// Contains the AST node if available, as well as wether this element was a layout that had
-    /// been lowered into a rectangle in the lower_layouts pass.
     /// There can be several in case of inlining or optimization (child merged into their parent).
     ///
     /// The order in the list is first the parent, and then the removed children.
-    pub debug: Vec<(syntax_nodes::Element, Option<crate::layout::Layout>)>,
+    pub debug: Vec<ElementDebugInfo>,
 }
 
 impl Spanned for Element {
     fn span(&self) -> crate::diagnostics::Span {
-        self.debug.first().map(|n| n.0.span()).unwrap_or_default()
+        self.debug.first().map(|n| n.node.span()).unwrap_or_default()
     }
 
     fn source_file(&self) -> Option<&crate::diagnostics::SourceFile> {
-        self.debug.first().map(|n| &n.0.source_file)
+        self.debug.first().map(|n| &n.node.source_file)
     }
 }
 
@@ -700,7 +732,7 @@ pub fn pretty_print(
     if e.is_component_placeholder {
         write!(f, "/* Component Placeholder */ ")?;
     }
-    writeln!(f, "{} := {} {{", e.id, e.base_type)?;
+    writeln!(f, "{} := {} {{  /* {} */", e.id, e.base_type, e.element_infos())?;
     let mut indentation = indentation + 1;
     macro_rules! indent {
         () => {
@@ -739,9 +771,9 @@ pub fn pretty_print(
     for (name, ch) in &e.change_callbacks {
         for ex in &*ch.borrow() {
             indent!();
-            writeln!(f, "changed {name} => {{ ")?;
+            write!(f, "changed {name} => ")?;
             expression_tree::pretty_print(f, ex)?;
-            writeln!(f, "  }}")?;
+            writeln!(f, "")?;
         }
     }
     if !e.states.is_empty() {
@@ -756,7 +788,7 @@ pub fn pretty_print(
         indent!();
         pretty_print(f, &c.borrow(), indentation)?
     }
-    for g in &e.geometry_props {
+    if let Some(g) = &e.geometry_props {
         indent!();
         writeln!(f, "geometry {:?} ", g)?;
     }
@@ -905,15 +937,28 @@ impl Element {
             ElementType::Global
         } else if parent_type != ElementType::Error {
             // This should normally never happen because the parser does not allow for this
-            assert!(diag.has_error());
+            assert!(diag.has_errors());
             return ElementRc::default();
         } else {
             tr.empty_type()
         };
+        // This isn't truly qualified yet, the enclosing component is added at the end of Component::from_node
+        let qualified_id = (!id.is_empty()).then(|| id.clone());
+        let type_name = base_type
+            .type_name()
+            .filter(|_| base_type != tr.empty_type())
+            .unwrap_or_default()
+            .to_string();
         let mut r = Element {
             id,
             base_type,
-            debug: vec![(node.clone(), None)],
+            debug: vec![ElementDebugInfo {
+                qualified_id,
+                type_name,
+                node: node.clone(),
+                layout: None,
+                element_boundary: false,
+            }],
             is_legacy_syntax,
             ..Default::default()
         };
@@ -1158,7 +1203,7 @@ impl Element {
                 .insert(name.clone(), BindingExpression::new_uncompiled(func.clone().into()).into())
                 .is_some()
             {
-                assert!(diag.has_error());
+                assert!(diag.has_errors());
             }
 
             let mut visibility = PropertyVisibility::Private;
@@ -1170,12 +1215,10 @@ impl Element {
                 match token.as_token().unwrap().text() {
                     "pure" => pure = Some(true),
                     "public" => {
-                        debug_assert_eq!(visibility, PropertyVisibility::Private);
                         visibility = PropertyVisibility::Public;
                         pure = pure.or(Some(false));
                     }
                     "protected" => {
-                        debug_assert_eq!(visibility, PropertyVisibility::Private);
                         visibility = PropertyVisibility::Protected;
                         pure = pure.or(Some(false));
                     }
@@ -1297,7 +1340,7 @@ impl Element {
         }
 
         for ch in node.PropertyChangedCallback() {
-            if !diag.enable_experimental {
+            if !diag.enable_experimental && !tr.expose_internal_types {
                 diag.push_error(
                     "Change callbacks are experimental and not yet implemented in this version of Slint".into(),
                     &ch,
@@ -1305,7 +1348,24 @@ impl Element {
             }
             let Some(prop) = parser::identifier_text(&ch.DeclaredIdentifier()) else { continue };
             let lookup_result = r.lookup_property(&prop);
-            if lookup_result.property_visibility == PropertyVisibility::Private
+            if !lookup_result.is_valid() {
+                diag.push_error(
+                    format!("Property '{prop}' does not exist"),
+                    &ch.DeclaredIdentifier(),
+                );
+            } else if !lookup_result.property_type.is_property_type() {
+                let what = match lookup_result.property_type {
+                    Type::Function { .. } => "a function",
+                    Type::Callback { .. } => "a callback",
+                    _ => "not a property",
+                };
+                diag.push_error(
+                    format!(
+                        "Change callback can only be set on properties, and '{prop}' is {what}"
+                    ),
+                    &ch.DeclaredIdentifier(),
+                );
+            } else if lookup_result.property_visibility == PropertyVisibility::Private
                 && !lookup_result.is_local_to_component
             {
                 diag.push_error(
@@ -1407,7 +1467,16 @@ impl Element {
                     .StatePropertyChange()
                     .filter_map(|s| {
                         lookup_property_from_qualified_name_for_state(s.QualifiedName(), &r, diag)
-                            .map(|(ne, _)| {
+                            .map(|(ne, ty)| {
+                                if !ty.is_property_type() && !matches!(ty, Type::Invalid) {
+                                    diag.push_error(
+                                        format!(
+                                            "'{}' is not a property",
+                                            s.QualifiedName().to_string()
+                                        ),
+                                        &s,
+                                    );
+                                }
                                 (ne, Expression::Uncompiled(s.BindingExpression().into()), s)
                             })
                     })
@@ -1681,7 +1750,7 @@ impl Element {
     pub fn original_name(&self) -> String {
         self.debug
             .first()
-            .and_then(|n| n.0.child_token(parser::SyntaxKind::Identifier))
+            .and_then(|n| n.node.child_token(parser::SyntaxKind::Identifier))
             .map(|n| n.to_string())
             .unwrap_or_else(|| self.id.clone())
     }
@@ -1739,6 +1808,31 @@ impl Element {
             None
         }
     }
+
+    pub fn element_infos(&self) -> String {
+        let mut debug_infos = self.debug.clone();
+        let mut base = self.base_type.clone();
+        while let ElementType::Component(b) = base {
+            let elem = b.root_element.borrow();
+            base = elem.base_type.clone();
+            debug_infos.extend(elem.debug.iter().cloned());
+        }
+
+        let (infos, _, _) = debug_infos.into_iter().fold(
+            (String::new(), false, true),
+            |(mut infos, elem_boundary, first), debug_info| {
+                if elem_boundary {
+                    infos.push('/');
+                } else if !first {
+                    infos.push(';');
+                }
+
+                infos.push_str(&debug_info.encoded_element_info());
+                (infos, debug_info.element_boundary, false)
+            },
+        );
+        infos
+    }
 }
 
 /// Apply default property values defined in `builtins.slint` to the element.
@@ -1782,7 +1876,7 @@ pub fn type_from_node(
     } else if let Some(array_node) = node.ArrayType() {
         Type::Array(Box::new(type_from_node(array_node.Type(), diag, tr)))
     } else {
-        assert!(diag.has_error());
+        assert!(diag.has_errors());
         Type::Invalid
     }
 }
@@ -2042,12 +2136,6 @@ pub fn recurse_elem_including_sub_components_no_borrow<State>(
         .borrow()
         .iter()
         .for_each(|p| recurse_elem_including_sub_components_no_borrow(&p.component, state, vis));
-    component
-        .used_types
-        .borrow()
-        .globals
-        .iter()
-        .for_each(|p| recurse_elem_including_sub_components_no_borrow(p, state, vis));
 }
 
 /// This visit the binding attached to this element, but does not recurse in children elements
@@ -2192,7 +2280,7 @@ pub fn visit_all_named_references_in_element(
     elem.borrow_mut().layout_info_prop = layout_info_prop;
     let mut debug = std::mem::take(&mut elem.borrow_mut().debug);
     for d in debug.iter_mut() {
-        d.1.as_mut().map(|l| l.visit_named_references(&mut vis));
+        d.layout.as_mut().map(|l| l.visit_named_references(&mut vis));
     }
     elem.borrow_mut().debug = debug;
 
@@ -2240,6 +2328,11 @@ pub fn visit_all_named_references(
                 compo.popup_windows.borrow_mut().iter_mut().for_each(|p| {
                     vis(&mut p.x);
                     vis(&mut p.y);
+                });
+                compo.timers.borrow_mut().iter_mut().for_each(|t| {
+                    vis(&mut t.interval);
+                    vis(&mut t.triggered);
+                    vis(&mut t.running);
                 });
             }
             compo
@@ -2322,13 +2415,27 @@ impl ExportedName {
             .map(|n| n.to_string())
             .unwrap_or_else(|| self.name.clone())
     }
+
+    pub fn from_export_specifier(
+        export_specifier: &syntax_nodes::ExportSpecifier,
+    ) -> (String, ExportedName) {
+        let internal_name = parser::identifier_text(&export_specifier.ExportIdentifier())
+            .unwrap_or_else(|| String::new());
+
+        let (name, name_ident): (String, SyntaxNode) = export_specifier
+            .ExportName()
+            .and_then(|ident| {
+                parser::identifier_text(&ident).map(|text| (text, ident.clone().into()))
+            })
+            .unwrap_or_else(|| (internal_name.clone(), export_specifier.ExportIdentifier().into()));
+        (internal_name, ExportedName { name, name_ident })
+    }
 }
 
 #[derive(Default, Debug, derive_more::Deref)]
 pub struct Exports {
     #[deref]
     components_or_types: Vec<(ExportedName, Either<Rc<Component>, Type>)>,
-    last_exported_component: Option<Rc<Component>>,
 }
 
 impl Exports {
@@ -2361,18 +2468,10 @@ impl Exports {
             };
 
         let mut sorted_exports_with_duplicates: Vec<(ExportedName, _)> = Vec::new();
-        let mut last_exported_component = None;
 
         let mut extend_exports =
             |it: &mut dyn Iterator<Item = (ExportedName, Either<Rc<Component>, Type>)>| {
                 for (name, compo_or_type) in it {
-                    match compo_or_type.as_ref().left() {
-                        Some(compo) if !compo.is_global() => {
-                            last_exported_component = Some(compo.clone())
-                        }
-                        _ => {}
-                    }
-
                     let pos = sorted_exports_with_duplicates
                         .partition_point(|(existing_name, _)| existing_name.name <= name.name);
                     sorted_exports_with_duplicates.insert(pos, (name, compo_or_type));
@@ -2380,34 +2479,23 @@ impl Exports {
             };
 
         extend_exports(
-            &mut doc.ExportsList().flat_map(|exports| exports.ExportSpecifier()).filter_map(
-                |export_specifier| {
-                    let internal_name =
-                        parser::identifier_text(&export_specifier.ExportIdentifier())
-                            .unwrap_or_else(|| {
-                                debug_assert!(diag.has_error());
-                                String::new()
-                            });
-
-                    let (name, name_ident): (String, SyntaxNode) = export_specifier
-                        .ExportName()
-                        .and_then(|ident| {
-                            parser::identifier_text(&ident).map(|text| (text, ident.clone().into()))
-                        })
-                        .unwrap_or_else(|| {
-                            (internal_name.clone(), export_specifier.ExportIdentifier().into())
-                        });
-
+            &mut doc
+                .ExportsList()
+                // re-export are handled in the TypeLoader::load_dependencies_recursively_impl
+                .filter(|exports| exports.ExportModule().is_none())
+                .flat_map(|exports| exports.ExportSpecifier())
+                .filter_map(|export_specifier| {
+                    let (internal_name, exported_name) =
+                        ExportedName::from_export_specifier(&export_specifier);
                     Some((
-                        ExportedName { name, name_ident },
+                        exported_name,
                         resolve_export_to_inner_component_or_import(
                             &internal_name,
                             &export_specifier.ExportIdentifier(),
                             diag,
                         )?,
                     ))
-                },
-            ),
+                }),
         );
 
         extend_exports(&mut doc.ExportsList().flat_map(|exports| exports.Component()).filter_map(
@@ -2415,7 +2503,7 @@ impl Exports {
                 let name_ident: SyntaxNode = component.DeclaredIdentifier().into();
                 let name =
                     parser::identifier_text(&component.DeclaredIdentifier()).unwrap_or_else(|| {
-                        debug_assert!(diag.has_error());
+                        debug_assert!(diag.has_errors());
                         String::new()
                     });
 
@@ -2437,7 +2525,7 @@ impl Exports {
                 })
                 .filter_map(|name_ident| {
                     let name = parser::identifier_text(&name_ident).unwrap_or_else(|| {
-                        debug_assert!(diag.has_error());
+                        debug_assert!(diag.has_errors());
                         String::new()
                     });
 
@@ -2471,30 +2559,28 @@ impl Exports {
             sorted_deduped_exports.push((exported_name, compo_or_type));
         }
 
-        if sorted_deduped_exports.is_empty() {
-            if let Some(last_compo) = inner_components.last() {
-                if last_compo.is_global() {
-                    diag.push_warning(
-                        "Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported"
-                            .into(),
-                        &last_compo.node,
-                    );
-                } else {
-                    diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node)
+        if let Some(last_compo) = inner_components.last() {
+            let name = last_compo.id.clone();
+            if last_compo.is_global() {
+                if sorted_deduped_exports.is_empty() {
+                    diag.push_warning("Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
+                    sorted_deduped_exports.push((
+                        ExportedName { name, name_ident: doc.clone().into() },
+                        Either::Left(last_compo.clone()),
+                    ))
                 }
-                let name = last_compo.id.clone();
+            } else if !sorted_deduped_exports
+                .iter()
+                .any(|e| e.1.as_ref().left().is_some_and(|c| !c.is_global()))
+            {
+                diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
                 sorted_deduped_exports.push((
                     ExportedName { name, name_ident: doc.clone().into() },
                     Either::Left(last_compo.clone()),
                 ))
             }
         }
-
-        if last_exported_component.is_none() {
-            last_exported_component = inner_components.last().cloned();
-        }
-
-        Self { components_or_types: sorted_deduped_exports, last_exported_component }
+        Self { components_or_types: sorted_deduped_exports }
     }
 
     pub fn add_reexports(
@@ -2525,6 +2611,33 @@ impl Exports {
             .binary_search_by(|(exported_name, _)| exported_name.as_str().cmp(name))
             .ok()
             .map(|index| self.components_or_types[index].1.clone())
+    }
+
+    pub fn retain(
+        &mut self,
+        func: impl FnMut(&mut (ExportedName, Either<Rc<Component>, Type>)) -> bool,
+    ) {
+        self.components_or_types.retain_mut(func)
+    }
+
+    pub(crate) fn snapshot(&self, snapshotter: &mut crate::typeloader::Snapshotter) -> Self {
+        let components_or_types = self
+            .components_or_types
+            .iter()
+            .map(|(en, either)| {
+                let en = en.clone();
+                let either = match either {
+                    itertools::Either::Left(l) => itertools::Either::Left({
+                        Weak::upgrade(&snapshotter.use_component(l))
+                            .expect("Component should cleanly upgrade here")
+                    }),
+                    itertools::Either::Right(r) => itertools::Either::Right(r.clone()),
+                };
+                (en, either)
+            })
+            .collect();
+
+        Self { components_or_types }
     }
 }
 

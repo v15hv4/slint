@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 from slint import slint as native
 import weakref
@@ -7,14 +7,14 @@ import gc
 
 
 def test_callback_gc():
-    compiler = native.ComponentCompiler()
+    compiler = native.Compiler()
 
     compdef = compiler.build_from_source("""
         export component Test {
             out property <string> test-value: "Ok";
             callback test-callback(string) -> string;
         }
-    """, "")
+    """, "").component("Test")
     assert compdef != None
 
     instance = compdef.create()

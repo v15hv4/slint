@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore frameless qbrush qpointf qreal qwidgetsize svgz
 
@@ -8,11 +8,12 @@ use i_slint_core::graphics::rendering_metrics_collector::{
     RenderingMetrics, RenderingMetricsCollector,
 };
 use i_slint_core::graphics::{
-    euclid, Brush, Color, FontRequest, IntRect, Point, SharedImageBuffer,
+    euclid, Brush, Color, FontRequest, IntRect, Point, Rgba8Pixel, SharedImageBuffer,
+    SharedPixelBuffer,
 };
 use i_slint_core::input::{KeyEvent, KeyEventType, MouseEvent};
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage,
+    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage, RenderText,
 };
 use i_slint_core::item_tree::{ItemTreeRc, ItemTreeRef};
 use i_slint_core::items::{
@@ -358,7 +359,7 @@ cpp! {{
     // if line_for_y_pos > 0, then the function will return the line at this y position
     static int do_text_layout(QTextLayout &layout, int flags, const QRectF &rect, int line_for_y_pos = -1) {
         QTextOption options;
-        options.setWrapMode((flags & Qt::TextWordWrap) ? QTextOption::WordWrap : QTextOption::NoWrap);
+        options.setWrapMode((flags & Qt::TextWordWrap) ? QTextOption::WordWrap : ((flags & Qt::TextWrapAnywhere) ? QTextOption::WrapAnywhere : QTextOption::NoWrap));
         if (flags & Qt::AlignHCenter)
             options.setAlignment(Qt::AlignCenter);
         else if (flags & Qt::AlignLeft)
@@ -636,7 +637,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
 
     fn draw_border_rectangle(
         &mut self,
-        rect: std::pin::Pin<&dyn RenderBorderRectangle>,
+        rect: Pin<&dyn RenderBorderRectangle>,
         _: &ItemRc,
         size: LogicalSize,
         _: &CachedRenderingData,
@@ -661,31 +662,40 @@ impl ItemRenderer for QtItemRenderer<'_> {
         self.draw_image_impl(item_rc, size, image);
     }
 
-    fn draw_text(&mut self, text: std::pin::Pin<&items::Text>, _: &ItemRc, size: LogicalSize) {
+    fn draw_text(
+        &mut self,
+        text: Pin<&dyn RenderText>,
+        _: &ItemRc,
+        size: LogicalSize,
+        _: &CachedRenderingData,
+    ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let fill_brush: qttypes::QBrush = into_qbrush(text.color(), rect.width, rect.height);
-        let stroke_brush: qttypes::QBrush = into_qbrush(text.stroke(), rect.width, rect.height);
         let mut string: qttypes::QString = text.text().as_str().into();
         let font: QFont = get_font(text.font_request(WindowInner::from_pub(self.window)));
-        let alignment = match text.horizontal_alignment() {
+        let (horizontal_alignment, vertical_alignment) = text.alignment();
+        let alignment = match horizontal_alignment {
             TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
             TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
             TextHorizontalAlignment::Right => key_generated::Qt_AlignmentFlag_AlignRight,
-        } | match text.vertical_alignment() {
+        } | match vertical_alignment {
             TextVerticalAlignment::Top => key_generated::Qt_AlignmentFlag_AlignTop,
             TextVerticalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignVCenter,
             TextVerticalAlignment::Bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
         };
-        let wrap = text.wrap() == TextWrap::WordWrap;
+        let wrap = text.wrap() != TextWrap::NoWrap;
+        let word_wrap = text.wrap() == TextWrap::WordWrap;
         let elide = text.overflow() == TextOverflow::Elide;
-        let stroke_visible = !text.stroke().is_transparent();
-        let stroke_outside = text.stroke_style() == TextStrokeStyle::Outside;
-        let stroke_width = match text.stroke_style() {
-            TextStrokeStyle::Outside => text.stroke_width().get() * 2.0,
-            TextStrokeStyle::Center => text.stroke_width().get(),
+        let (stroke_brush, stroke_width, stroke_style) = text.stroke();
+        let stroke_visible = !stroke_brush.is_transparent();
+        let stroke_brush: qttypes::QBrush = into_qbrush(stroke_brush, rect.width, rect.height);
+        let stroke_outside = stroke_style == TextStrokeStyle::Outside;
+        let stroke_width = match stroke_style {
+            TextStrokeStyle::Outside => stroke_width.get() * 2.0,
+            TextStrokeStyle::Center => stroke_width.get(),
         };
         let painter: &mut QPainterPtr = &mut self.painter;
-        cpp! { unsafe [painter as "QPainterPtr*", rect as "QRectF", fill_brush as "QBrush", stroke_brush as "QBrush", mut string as "QString", font as "QFont", elide as "bool", alignment as "Qt::Alignment", wrap as "bool", stroke_visible as "bool", stroke_outside as "bool", stroke_width as "float"] {
+        cpp! { unsafe [painter as "QPainterPtr*", rect as "QRectF", fill_brush as "QBrush", stroke_brush as "QBrush", mut string as "QString", font as "QFont", elide as "bool", alignment as "Qt::Alignment", wrap as "bool", word_wrap as "bool", stroke_visible as "bool", stroke_outside as "bool", stroke_width as "float"] {
             QString elided;
             if (!elide) {
                 elided = string;
@@ -709,7 +719,11 @@ impl ItemRenderer for QtItemRenderer<'_> {
                 QFontMetrics fm(font);
                 QTextLayout layout(string, font);
                 QTextOption options;
-                options.setWrapMode(QTextOption::WordWrap);
+                if (word_wrap) {
+                    options.setWrapMode(QTextOption::WordWrap);
+                } else {
+                    options.setWrapMode(QTextOption::WrapAnywhere);
+                }
                 layout.setTextOption(options);
                 layout.setCacheEnabled(true);
                 layout.beginLayout();
@@ -739,8 +753,13 @@ impl ItemRenderer for QtItemRenderer<'_> {
 
             if (!stroke_visible) {
                 int flags = alignment;
-                if (wrap)
-                    flags |= Qt::TextWordWrap;
+                if (wrap) {
+                    if (word_wrap) {
+                        flags |= Qt::TextWordWrap;
+                    } else {
+                        flags |= Qt::TextWrapAnywhere;
+                    }
+                }
 
                 (*painter)->setFont(font);
                 (*painter)->setBrush(Qt::NoBrush);
@@ -754,8 +773,13 @@ impl ItemRenderer for QtItemRenderer<'_> {
 
                 QTextOption options = document.defaultTextOption();
                 options.setAlignment(alignment);
-                if (wrap)
-                    options.setWrapMode(QTextOption::WordWrap);
+                if (wrap) {
+                    if (word_wrap) {
+                        options.setWrapMode(QTextOption::WordWrap);
+                    } else {
+                        options.setWrapMode(QTextOption::WrapAnywhere);
+                    }
+                }
                 document.setDefaultTextOption(options);
 
                 // Workaround for https://bugreports.qt.io/browse/QTBUG-13467
@@ -817,7 +841,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
 
     fn draw_text_input(
         &mut self,
-        text_input: std::pin::Pin<&items::TextInput>,
+        text_input: Pin<&items::TextInput>,
         _: &ItemRc,
         size: LogicalSize,
     ) {
@@ -837,6 +861,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
         } | match text_input.wrap() {
             TextWrap::NoWrap => 0,
             TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::CharWrap => key_generated::Qt_TextFlag_TextWrapAnywhere,
         };
 
         let visual_representation = text_input.visual_representation(Some(qt_password_character));
@@ -1786,13 +1811,9 @@ impl WindowAdapter for QtWindow {
                 bool wasVisible = widget_ptr->isVisible();
 
                 widget_ptr->hide();
-                // Since we don't call close(), this will force Qt to recompute wether there are any
-                // visible windows, and ends the application if needed
-                auto _locker = QEventLoopLocker();
-
-                // Compute the same thing also manually, when the event loop is driven by processEvents
-                // like in the NodeJS port.
                 if (wasVisible) {
+                    // Since we don't call close(), try to compute whether this was the last window and that
+                    // we must end the application
                     auto windows = QGuiApplication::topLevelWindows();
                     bool visible_windows_left = std::any_of(windows.begin(), windows.end(), [](auto window) {
                         return window->isVisible() || window->transientParent();
@@ -1834,6 +1855,8 @@ impl WindowAdapter for QtWindow {
         cpp! {unsafe [widget_ptr as "QWidget*", sz as "QSize"] {
             widget_ptr->resize(sz);
         }};
+
+        self.resize_event(sz);
     }
 
     fn size(&self) -> i_slint_core::api::PhysicalSize {
@@ -2126,8 +2149,13 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
         text: &str,
         max_width: Option<LogicalLength>,
         _scale_factor: ScaleFactor,
+        text_wrap: TextWrap,
     ) -> LogicalSize {
-        get_font(font_request).text_size(text, max_width.map(|logical_width| logical_width.get()))
+        get_font(font_request).text_size(
+            text,
+            max_width.map(|logical_width| logical_width.get()),
+            text_wrap,
+        )
     }
 
     fn text_input_byte_offset_for_position(
@@ -2160,6 +2188,7 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
         } | match text_input.wrap() {
             TextWrap::NoWrap => 0,
             TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::CharWrap => key_generated::Qt_TextFlag_TextWrapAnywhere,
         };
         let single_line: bool = text_input.single_line();
         let byte_offset = cpp! { unsafe [font as "QFont", string as "QString", pos as "QPointF", flags as "int",
@@ -2217,6 +2246,7 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
         } | match text_input.wrap() {
             TextWrap::NoWrap => 0,
             TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::CharWrap => key_generated::Qt_TextFlag_TextWrapAnywhere,
         };
         let single_line: bool = text_input.single_line();
         let r = cpp! { unsafe [font as "QFont", mut string as "QString", offset as "int", flags as "int", rect as "QRectF", single_line as "bool"]
@@ -2294,6 +2324,28 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
     fn set_window_adapter(&self, _window_adapter: &Rc<dyn WindowAdapter>) {
         // No-op because QtWindow is also the WindowAdapter
     }
+
+    fn take_snapshot(&self) -> Result<SharedPixelBuffer<Rgba8Pixel>, PlatformError> {
+        let widget_ptr = self.widget_ptr();
+
+        let size = cpp! {unsafe [widget_ptr as "QWidget*"] -> qttypes::QSize as "QSize" {
+            return widget_ptr->size();
+        }};
+
+        let rgba8_data = cpp! {unsafe [widget_ptr as "QWidget*"] -> qttypes::QByteArray as "QByteArray" {
+            QPixmap pixmap = widget_ptr->grab();
+            QImage image = pixmap.toImage();
+            image.convertTo(QImage::Format_ARGB32);
+            return QByteArray(reinterpret_cast<const char *>(image.constBits()), image.sizeInBytes());
+        }};
+
+        let buffer = i_slint_core::graphics::SharedPixelBuffer::<i_slint_core::graphics::Rgba8Pixel>::clone_from_slice(
+            rgba8_data.to_slice(),
+            size.width,
+            size.height,
+        );
+        Ok(buffer)
+    }
 }
 
 fn accessible_item(item: Option<ItemRc>) -> Option<ItemRc> {
@@ -2346,16 +2398,17 @@ fn get_font(request: FontRequest) -> QFont {
 cpp_class! {pub unsafe struct QFont as "QFont"}
 
 impl QFont {
-    fn text_size(&self, text: &str, max_width: Option<f32>) -> LogicalSize {
+    fn text_size(&self, text: &str, max_width: Option<f32>, text_wrap: TextWrap) -> LogicalSize {
         let string = qttypes::QString::from(text);
+        let char_wrap = text_wrap == TextWrap::CharWrap;
         let mut r = qttypes::QRectF::default();
         if let Some(max) = max_width {
             r.height = f32::MAX as _;
             r.width = max as _;
         }
-        let size = cpp! { unsafe [self as "const QFont*", string as "QString", r as "QRectF"]
+        let size = cpp! { unsafe [self as "const QFont*", string as "QString", r as "QRectF", char_wrap as "bool"]
                 -> qttypes::QSizeF as "QSizeF"{
-            return QFontMetricsF(*self).boundingRect(r, r.isEmpty() ? 0 : Qt::TextWordWrap , string).size();
+            return QFontMetricsF(*self).boundingRect(r, r.isEmpty() ? 0 : ((char_wrap) ? Qt::TextWrapAnywhere : Qt::TextWordWrap) , string).size();
         }};
         LogicalSize::new(size.width as _, size.height as _)
     }

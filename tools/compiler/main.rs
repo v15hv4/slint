@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use clap::{Parser, ValueEnum};
 use i_slint_compiler::diagnostics::BuildDiagnostics;
@@ -47,6 +47,10 @@ struct Cli {
     #[arg(long, name = "style name", action)]
     style: Option<String>,
 
+    /// The constant scale factor to apply for embedded assets and set by default on the window.
+    #[arg(long, name = "scale factor", action)]
+    scale_factor: Option<f64>,
+
     /// Generate a dependency file
     #[arg(name = "dependency file", long = "depfile", number_of_values = 1, action)]
     depfile: Option<std::path::PathBuf>,
@@ -74,7 +78,7 @@ fn main() -> std::io::Result<()> {
     let mut diag = BuildDiagnostics::default();
     let syntax_node = parser::parse_file(&args.path, &mut diag);
     //println!("{:#?}", syntax_node);
-    if diag.has_error() {
+    if diag.has_errors() {
         diag.print();
         std::process::exit(-1);
     }
@@ -111,18 +115,23 @@ fn main() -> std::io::Result<()> {
     if let Some(style) = args.style {
         compiler_config.style = Some(style);
     }
+    if let Some(constant_scale_factor) = args.scale_factor {
+        compiler_config.const_scale_factor = constant_scale_factor;
+    }
     let syntax_node = syntax_node.expect("diags contained no compilation errors");
-    let (doc, diag, _) = spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
+    let (doc, diag, loader) =
+        spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
 
     let diag = diag.check_and_exit_on_error();
 
     if args.output == std::path::Path::new("-") {
-        generator::generate(format, &mut std::io::stdout(), &doc)?;
+        generator::generate(format, &mut std::io::stdout(), &doc, &loader.compiler_config)?;
     } else {
         generator::generate(
             format,
             &mut BufWriter::new(std::fs::File::create(&args.output)?),
             &doc,
+            &loader.compiler_config,
         )?;
     }
 
@@ -134,7 +143,7 @@ fn main() -> std::io::Result<()> {
                 write!(f, " {}", x.display())?;
             }
         }
-        for resource in doc.root_component.embedded_file_resources.borrow().keys() {
+        for resource in doc.embedded_file_resources.borrow().keys() {
             if !fileaccess::load_file(std::path::Path::new(resource))
                 .map_or(false, |f| f.is_builtin())
             {

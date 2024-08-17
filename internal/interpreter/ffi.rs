@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::dynamic_item_tree::ErasedItemTreeBox;
 
@@ -657,8 +657,9 @@ pub struct Diagnostic {
 }
 
 #[repr(transparent)]
-pub struct ComponentCompilerOpaque(NonNull<ComponentCompiler>);
+pub struct ComponentCompilerOpaque(#[allow(deprecated)] NonNull<ComponentCompiler>);
 
+#[allow(deprecated)]
 impl ComponentCompilerOpaque {
     fn as_component_compiler(&self) -> &ComponentCompiler {
         // Safety: there should be no way to construct a ComponentCompilerOpaque without it holding an actual ComponentCompiler
@@ -671,6 +672,7 @@ impl ComponentCompilerOpaque {
 }
 
 #[no_mangle]
+#[allow(deprecated)]
 pub unsafe extern "C" fn slint_interpreter_component_compiler_new(
     compiler: *mut ComponentCompilerOpaque,
 ) {
@@ -742,6 +744,7 @@ pub unsafe extern "C" fn slint_interpreter_component_compiler_get_diagnostics(
     compiler: &ComponentCompilerOpaque,
     out_diags: &mut SharedVector<Diagnostic>,
 ) {
+    #[allow(deprecated)]
     out_diags.extend(compiler.as_component_compiler().diagnostics.iter().map(|diagnostic| {
         let (line, column) = diagnostic.line_column();
         Diagnostic {
@@ -869,6 +872,15 @@ pub unsafe extern "C" fn slint_interpreter_component_definition_callbacks(
     callbacks.extend((&*def).as_component_definition().callbacks().map(|name| name.into()))
 }
 
+/// Returns the list of function names of the component the component definition describes
+#[no_mangle]
+pub unsafe extern "C" fn slint_interpreter_component_definition_functions(
+    def: &ComponentDefinitionOpaque,
+    functions: &mut SharedVector<SharedString>,
+) {
+    functions.extend((&*def).as_component_definition().functions().map(|name| name.into()))
+}
+
 /// Return the name of the component definition
 #[no_mangle]
 pub unsafe extern "C" fn slint_interpreter_component_definition_name(
@@ -920,6 +932,25 @@ pub unsafe extern "C" fn slint_interpreter_component_definition_global_callbacks
     if let Some(name_it) = (&*def)
         .as_component_definition()
         .global_callbacks(std::str::from_utf8(&global_name).unwrap())
+    {
+        names.extend(name_it.map(|name| name.into()));
+        true
+    } else {
+        false
+    }
+}
+
+/// Returns a vector of the names of the functions of the specified publicly exported global
+/// singleton. Returns true if a global exists under the specified name; false otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn slint_interpreter_component_definition_global_functions(
+    def: &ComponentDefinitionOpaque,
+    global_name: Slice<u8>,
+    names: &mut SharedVector<SharedString>,
+) -> bool {
+    if let Some(name_it) = (&*def)
+        .as_component_definition()
+        .global_functions(std::str::from_utf8(&global_name).unwrap())
     {
         names.extend(name_it.map(|name| name.into()));
         true

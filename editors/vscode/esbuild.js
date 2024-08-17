@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 let wasmPlugin = {
     name: "wasm",
@@ -70,15 +70,5 @@ esbuild
         outfile: "out/extension.js",
         platform: "node",
         format: "cjs",
-    })
-    .catch(() => process.exit(1));
-
-esbuild
-    .build({
-        entryPoints: ["src/propertiesView.ts"],
-        bundle: true,
-        outfile: "out/propertiesView.js",
-        platform: "browser",
-        format: "iife",
     })
     .catch(() => process.exit(1));

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Inline properties that are simple enough to be inlined
 //!
@@ -7,7 +7,7 @@
 //! in the calling expression
 
 use crate::expression_tree::BuiltinFunction;
-use crate::llr::{EvaluationContext, Expression, PropertyInfoResult, PublicComponent};
+use crate::llr::{CompilationUnit, EvaluationContext, Expression};
 
 const PROPERTY_ACCESS_COST: isize = 1000;
 const ALLOC_COST: isize = 700;
@@ -38,8 +38,16 @@ fn expression_cost(exp: &Expression, ctx: &EvaluationContext) -> isize {
         Expression::BinaryExpression { .. } => 1,
         Expression::UnaryOp { .. } => 1,
         Expression::ImageReference { .. } => 1,
-        Expression::Condition { .. } => 10,
-        Expression::Array { .. } => ALLOC_COST,
+        Expression::Condition { condition, true_expr, false_expr } => {
+            return expression_cost(condition, ctx)
+                .saturating_add(
+                    expression_cost(true_expr, ctx).max(expression_cost(false_expr, ctx)),
+                )
+                .saturating_add(10);
+        }
+        // Never inline an array because it is a model and when shared it needs to keep its identity
+        // (cf #5249)  (otherwise it would be `ALLOC_COST`)
+        Expression::Array { .. } => return isize::MAX,
         Expression::Struct { .. } => 1,
         Expression::EasingCurve(_) => 1,
         Expression::LinearGradient { .. } => ALLOC_COST,
@@ -49,6 +57,7 @@ fn expression_cost(exp: &Expression, ctx: &EvaluationContext) -> isize {
         Expression::BoxLayoutFunction { .. } => return isize::MAX,
         Expression::ComputeDialogLayoutCells { .. } => return isize::MAX,
         Expression::MinMax { .. } => 10,
+        Expression::EmptyComponentFactory => 10,
     };
 
     exp.visit(|e| cost = cost.saturating_add(expression_cost(e, ctx)));
@@ -104,13 +113,21 @@ fn builtin_function_cost(function: &BuiltinFunction) -> isize {
         BuiltinFunction::RegisterCustomFontByMemory => isize::MAX,
         BuiltinFunction::RegisterBitmapFont => isize::MAX,
         BuiltinFunction::ColorScheme => isize::MAX,
+        BuiltinFunction::MonthDayCount => isize::MAX,
+        BuiltinFunction::MonthOffset => isize::MAX,
+        BuiltinFunction::FormatDate => isize::MAX,
+        BuiltinFunction::DateNow => isize::MAX,
+        BuiltinFunction::ValidDate => isize::MAX,
+        BuiltinFunction::ParseDate => isize::MAX,
         BuiltinFunction::SetTextInputFocused => PROPERTY_ACCESS_COST,
         BuiltinFunction::TextInputFocused => PROPERTY_ACCESS_COST,
         BuiltinFunction::Translate => 2 * ALLOC_COST + PROPERTY_ACCESS_COST,
+        BuiltinFunction::Use24HourFormat => 2 * ALLOC_COST + PROPERTY_ACCESS_COST,
+        BuiltinFunction::UpdateTimers => 10,
     }
 }
 
-pub fn inline_simple_expressions(root: &PublicComponent) {
+pub fn inline_simple_expressions(root: &CompilationUnit) {
     root.for_each_expression(&mut |e, ctx| {
         inline_simple_expressions_in_expression(&mut e.borrow_mut(), ctx)
     })
@@ -118,19 +135,22 @@ pub fn inline_simple_expressions(root: &PublicComponent) {
 
 fn inline_simple_expressions_in_expression(expr: &mut Expression, ctx: &EvaluationContext) {
     if let Expression::PropertyReference(prop) = expr {
-        if let PropertyInfoResult { analysis: Some(a), binding: Some((binding, map)), .. } =
-            ctx.property_info(prop)
-        {
-            if !a.is_set
-                && !a.is_set_externally
-                // State info binding are special and the binding cannot be inlined or used.
-                && !binding.is_state_info
-                && binding.animation.is_none()
-                && expression_cost(&binding.expression.borrow(), &map.map_context(ctx)) < INLINE_THRESHOLD
-            {
-                // Perform inlining
-                *expr = binding.expression.borrow().clone();
-                map.map_expression(expr);
+        let prop_info = ctx.property_info(prop);
+        if prop_info.analysis.as_ref().is_some_and(|a| !a.is_set && !a.is_set_externally) {
+            if let Some((binding, map)) = prop_info.binding {
+                if binding.animation.is_none()
+                    // State info binding are special and the binding cannot be inlined or used.
+                    && !binding.is_state_info
+                    && expression_cost(&binding.expression.borrow(), &map.map_context(ctx)) < INLINE_THRESHOLD
+                {
+                    // Perform inlining
+                    *expr = binding.expression.borrow().clone();
+                    map.map_expression(expr);
+                }
+            } else if let Some(prop_decl) = prop_info.property_decl {
+                if let Some(e) = Expression::default_value_for_type(&prop_decl.ty) {
+                    *expr = e;
+                }
             }
         }
     };

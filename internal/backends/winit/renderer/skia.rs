@@ -1,85 +1,38 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::winitwindowadapter::physical_size_to_slint;
 use i_slint_core::platform::PlatformError;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 
 pub struct WinitSkiaRenderer {
     renderer: i_slint_renderer_skia::SkiaRenderer,
+    suspended: Cell<bool>,
 }
 
 impl WinitSkiaRenderer {
-    pub fn new(
-        window_builder: winit::window::WindowBuilder,
-    ) -> Result<(Box<dyn super::WinitCompatibleRenderer>, Rc<winit::window::Window>), PlatformError>
-    {
-        let winit_window = Rc::new(crate::event_loop::with_window_target(|event_loop| {
-            window_builder.build(event_loop.event_loop_target()).map_err(|winit_os_error| {
-                format!("Error creating native window for Skia rendering: {}", winit_os_error)
-                    .into()
-            })
-        })?);
-
-        let renderer = i_slint_renderer_skia::SkiaRenderer::default();
-
-        renderer.set_pre_present_callback(Some(Box::new({
-            let winit_window = winit_window.clone();
-            move || {
-                winit_window.pre_present_notify();
-            }
-        })));
-
-        Ok((Box::new(Self { renderer }), winit_window))
+    pub fn new_suspended() -> Box<dyn super::WinitCompatibleRenderer> {
+        Box::new(Self {
+            renderer: i_slint_renderer_skia::SkiaRenderer::default(),
+            suspended: Default::default(),
+        })
     }
 
     #[cfg(not(target_os = "android"))]
-    pub fn new_software(
-        window_builder: winit::window::WindowBuilder,
-    ) -> Result<(Box<dyn super::WinitCompatibleRenderer>, Rc<winit::window::Window>), PlatformError>
-    {
-        let winit_window = Rc::new(crate::event_loop::with_window_target(|event_loop| {
-            window_builder.build(event_loop.event_loop_target()).map_err(|winit_os_error| {
-                format!("Error creating native window for Skia rendering: {}", winit_os_error)
-                    .into()
-            })
-        })?);
-
-        let renderer = i_slint_renderer_skia::SkiaRenderer::default_software();
-
-        renderer.set_pre_present_callback(Some(Box::new({
-            let winit_window = winit_window.clone();
-            move || {
-                winit_window.pre_present_notify();
-            }
-        })));
-
-        Ok((Box::new(Self { renderer }), winit_window))
+    pub fn new_software_suspended() -> Box<dyn super::WinitCompatibleRenderer> {
+        Box::new(Self {
+            renderer: i_slint_renderer_skia::SkiaRenderer::default_software(),
+            suspended: Default::default(),
+        })
     }
 
-    pub fn new_opengl(
-        window_builder: winit::window::WindowBuilder,
-    ) -> Result<(Box<dyn super::WinitCompatibleRenderer>, Rc<winit::window::Window>), PlatformError>
-    {
-        let winit_window = Rc::new(crate::event_loop::with_window_target(|event_loop| {
-            window_builder.build(event_loop.event_loop_target()).map_err(|winit_os_error| {
-                format!("Error creating native window for Skia rendering: {}", winit_os_error)
-                    .into()
-            })
-        })?);
-
-        let renderer = i_slint_renderer_skia::SkiaRenderer::default_opengl();
-
-        renderer.set_pre_present_callback(Some(Box::new({
-            let winit_window = winit_window.clone();
-            move || {
-                winit_window.pre_present_notify();
-            }
-        })));
-
-        Ok((Box::new(Self { renderer }), winit_window))
+    pub fn new_opengl_suspended() -> Box<dyn super::WinitCompatibleRenderer> {
+        Box::new(Self {
+            renderer: i_slint_renderer_skia::SkiaRenderer::default_opengl(),
+            suspended: Default::default(),
+        })
     }
 }
 
@@ -92,30 +45,45 @@ impl super::WinitCompatibleRenderer for WinitSkiaRenderer {
         &self.renderer
     }
 
-    fn resumed(&self, winit_window: &winit::window::Window) -> Result<(), PlatformError> {
+    fn suspend(&self) -> Result<(), PlatformError> {
+        self.suspended.set(true);
+        self.renderer.set_pre_present_callback(None);
+        self.renderer.suspend()
+    }
+
+    fn resume(
+        &self,
+        window_attributes: winit::window::WindowAttributes,
+    ) -> Result<Rc<winit::window::Window>, PlatformError> {
+        let winit_window = Rc::new(crate::event_loop::with_window_target(|event_loop| {
+            event_loop.create_window(window_attributes).map_err(|winit_os_error| {
+                format!("Error creating native window for Skia rendering: {}", winit_os_error)
+                    .into()
+            })
+        })?);
+
         let size = winit_window.inner_size();
 
-        // Safety: This is safe because the handle remains valid; the next rwh release provides `new()` without unsafe.
-        let active_handle = unsafe { raw_window_handle::ActiveHandle::new_unchecked() };
-
-        // Safety: API wise we can't guarantee that the window/display handles remain valid, so we
-        // use unsafe here. However the winit window adapter keeps the winit window alive as long as
-        // the renderer.
-        // TODO: remove once winit implements HasWindowHandle/HasDisplayHandle
-        let (window_handle, display_handle) = unsafe {
-            (
-                raw_window_handle::WindowHandle::borrow_raw(
-                    winit_window.raw_window_handle(),
-                    active_handle,
-                ),
-                raw_window_handle::DisplayHandle::borrow_raw(winit_window.raw_display_handle()),
-            )
-        };
-
         self.renderer.set_window_handle(
-            window_handle,
-            display_handle,
+            winit_window.clone(),
+            winit_window.clone(),
             physical_size_to_slint(&size),
-        )
+            winit_window.scale_factor() as f32,
+        )?;
+
+        self.renderer.set_pre_present_callback(Some(Box::new({
+            let winit_window = winit_window.clone();
+            move || {
+                winit_window.pre_present_notify();
+            }
+        })));
+
+        self.suspended.set(false);
+
+        Ok(winit_window)
+    }
+
+    fn is_suspended(&self) -> bool {
+        self.suspended.get()
     }
 }

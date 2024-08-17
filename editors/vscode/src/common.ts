@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore codespaces
 
@@ -7,9 +7,8 @@
 
 import * as vscode from "vscode";
 
-import { PropertiesViewProvider } from "./properties_webview";
 import * as wasm_preview from "./wasm_preview";
-import * as lsp_commands from "../../../tools/slintpad/src/shared/lsp_commands";
+import * as lsp_commands from "./lsp_commands";
 import * as snippets from "./snippets";
 
 import {
@@ -135,13 +134,9 @@ export function prepare_client(client: BaseLanguageClient) {
 export function activate(
     context: vscode.ExtensionContext,
     startClient: (_client: ClientHandle, _ctx: vscode.ExtensionContext) => void,
-): [vscode.StatusBarItem, PropertiesViewProvider] {
+): vscode.StatusBarItem {
     const statusBar = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Left,
-    );
-
-    const properties_provider = new PropertiesViewProvider(
-        context.extensionUri,
     );
 
     context.subscriptions.push(statusBar);
@@ -154,8 +149,6 @@ export function activate(
             );
         }
         wasm_preview.initClientForPreview(context, cl);
-
-        properties_provider.refresh_view();
     });
 
     vscode.workspace.onDidChangeConfiguration(async (ev) => {
@@ -169,10 +162,6 @@ export function activate(
     });
 
     startClient(client, context);
-
-    client.add_updater((c) => {
-        properties_provider.client = c;
-    });
 
     context.subscriptions.push(
         vscode.commands.registerCommand("slint.showPreview", async function () {
@@ -198,14 +187,6 @@ export function activate(
         new wasm_preview.PreviewSerializer(context),
     );
 
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(
-            PropertiesViewProvider.viewType,
-            properties_provider,
-        ),
-    );
-    properties_provider.refresh_view();
-
     vscode.workspace.onDidChangeTextDocument(async (ev) => {
         if (
             ev.document.languageId !== "slint" &&
@@ -213,12 +194,6 @@ export function activate(
         ) {
             return;
         }
-
-        // Send a request for properties information after passing through the
-        // event loop once to make sure the LSP got signaled to update.
-        setTimeout(() => {
-            properties_provider.refresh_view();
-        }, 1);
     });
 
     vscode.workspace.onDidChangeConfiguration(async (ev) => {
@@ -230,7 +205,7 @@ export function activate(
         }
     });
 
-    return [statusBar, properties_provider];
+    return statusBar;
 }
 
 export function deactivate(): Thenable<void> | undefined {

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains image and caching related types for the run-time library.
@@ -11,7 +11,7 @@ use crate::{slice::Slice, SharedString};
 struct ImageWeightInBytes;
 
 impl clru::WeightScale<ImageCacheKey, ImageInner> for ImageWeightInBytes {
-    fn weight(&self, key: &ImageCacheKey, value: &ImageInner) -> usize {
+    fn weight(&self, _key: &ImageCacheKey, value: &ImageInner) -> usize {
         match value {
             ImageInner::None => 0,
             ImageInner::EmbeddedImage { buffer, .. } => match buffer {
@@ -27,7 +27,7 @@ impl clru::WeightScale<ImageCacheKey, ImageInner> for ImageWeightInBytes {
             ImageInner::BackendStorage(x) => vtable::VRc::borrow(x).size().area() as usize,
             #[cfg(not(target_arch = "wasm32"))]
             ImageInner::BorrowedOpenGLTexture(..) => 0, // Assume storage in GPU memory
-            ImageInner::NineSlice(nine) => self.weight(key, &nine.0),
+            ImageInner::NineSlice(nine) => self.weight(_key, &nine.0),
         }
     }
 }

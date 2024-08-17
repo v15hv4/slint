@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 from importlib.machinery import ModuleSpec
 import os
@@ -8,6 +8,7 @@ from . import slint as native
 import types
 import logging
 import importlib
+import copy
 from . import models
 
 
@@ -73,6 +74,22 @@ def _build_global_class(compdef, global_name):
             return property(getter, setter)
 
         properties_and_callbacks[python_prop] = mk_setter_getter(callback_name)
+
+    for function_name in compdef.global_functions(global_name):
+        python_prop = _normalize_prop(function_name)
+        if python_prop in properties_and_callbacks:
+            logging.warning(f"Duplicated function {prop_name}")
+            continue
+
+        def mk_getter(function_name):
+            def getter(self):
+                def call(*args):
+                    return self.__instance__.invoke_global(global_name, function_name, *args)
+                return call
+
+            return property(getter)
+
+        properties_and_callbacks[python_prop] = mk_getter(function_name)
 
     return type("SlintGlobalClassWrapper", (), properties_and_callbacks)
 
@@ -143,20 +160,57 @@ def _build_class(compdef):
 
         properties_and_callbacks[python_prop] = mk_setter_getter(callback_name)
 
+    for function_name in compdef.functions:
+        python_prop = _normalize_prop(function_name)
+        if python_prop in properties_and_callbacks:
+            logging.warning(f"Duplicated function {prop_name}")
+            continue
+
+        def mk_getter(function_name):
+            def getter(self):
+                def call(*args):
+                    return self.__instance__.invoke(function_name, *args)
+                return call
+
+            return property(getter)
+
+        properties_and_callbacks[python_prop] = mk_getter(function_name)
+
     for global_name in compdef.globals:
         global_class = _build_global_class(compdef, global_name)
 
-        def global_getter(self):
-            wrapper = global_class()
-            setattr(wrapper, "__instance__", self.__instance__)
-            return wrapper
-        properties_and_callbacks[global_name] = property(global_getter)
+        def mk_global(global_class):
+            def global_getter(self):
+                wrapper = global_class()
+                setattr(wrapper, "__instance__", self.__instance__)
+                return wrapper
+
+            return property(global_getter)
+
+        properties_and_callbacks[global_name] = mk_global(global_class)
 
     return type("SlintClassWrapper", (Component,), properties_and_callbacks)
 
 
+def _build_struct(name, struct_prototype):
+
+    def new_struct(cls, *args, **kwargs):
+        inst = copy.copy(struct_prototype)
+
+        for prop, val in kwargs.items():
+            setattr(inst, prop, val)
+
+        return inst
+
+    type_dict = {
+        "__new__": new_struct,
+    }
+
+    return type(name, (), type_dict)
+
+
 def load_file(path, quiet=False, style=None, include_paths=None, library_paths=None, translation_domain=None):
-    compiler = native.ComponentCompiler()
+    compiler = native.Compiler()
 
     if style is not None:
         compiler.style = style
@@ -167,9 +221,9 @@ def load_file(path, quiet=False, style=None, include_paths=None, library_paths=N
     if translation_domain is not None:
         compiler.translation_domain = translation_domain
 
-    compdef = compiler.build_from_path(path)
+    result = compiler.build_from_path(path)
 
-    diagnostics = compiler.diagnostics
+    diagnostics = result.diagnostics
     if diagnostics:
         if not quiet:
             for diag in diagnostics:
@@ -181,10 +235,21 @@ def load_file(path, quiet=False, style=None, include_paths=None, library_paths=N
             if errors:
                 raise CompileError(f"Could not compile {path}", diagnostics)
 
-    wrapper_class = _build_class(compdef)
-
     module = types.SimpleNamespace()
-    setattr(module, compdef.name, wrapper_class)
+    for comp_name in result.component_names:
+        wrapper_class = _build_class(result.component(comp_name))
+
+        setattr(module, comp_name, wrapper_class)
+
+    for name, struct_or_enum_prototype in result.structs_and_enums.items():
+        name = _normalize_prop(name)
+        struct_wrapper = _build_struct(name, struct_or_enum_prototype)
+        setattr(module, name, struct_wrapper)
+
+    for orig_name, new_name in result.named_exports:
+        orig_name = _normalize_prop(orig_name)
+        new_name = _normalize_prop(new_name)
+        setattr(module, new_name, getattr(module, orig_name))
 
     return module
 
@@ -244,3 +309,4 @@ ListModel = models.ListModel
 Model = models.Model
 Timer = native.Timer
 TimerMode = native.TimerMode
+Struct = native.PyStruct

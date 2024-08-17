@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 The module responsible for the code generation.
@@ -16,6 +16,7 @@ use crate::expression_tree::{BindingExpression, Expression};
 use crate::langtype::ElementType;
 use crate::namedreference::NamedReference;
 use crate::object_tree::{Component, Document, ElementRc};
+use crate::CompilerConfiguration;
 
 #[cfg(feature = "cpp")]
 pub mod cpp;
@@ -65,24 +66,20 @@ pub fn generate(
     format: OutputFormat,
     destination: &mut impl std::io::Write,
     doc: &Document,
+    compiler_config: &CompilerConfiguration,
 ) -> std::io::Result<()> {
     #![allow(unused_variables)]
     #![allow(unreachable_code)]
 
-    if matches!(doc.root_component.root_element.borrow().base_type, ElementType::Error) {
-        // empty document, nothing to generate
-        return Ok(());
-    }
-
     match format {
         #[cfg(feature = "cpp")]
         OutputFormat::Cpp(config) => {
-            let output = cpp::generate(doc, config);
+            let output = cpp::generate(doc, config, compiler_config);
             write!(destination, "{}", output)?;
         }
         #[cfg(feature = "rust")]
         OutputFormat::Rust => {
-            let output = rust::generate(doc);
+            let output = rust::generate(doc, compiler_config);
             write!(destination, "{}", output)?;
         }
         OutputFormat::Interpreter => {
@@ -92,7 +89,7 @@ pub fn generate(
             )); // Perhaps byte code in the future?
         }
         OutputFormat::Llr => {
-            let root = crate::llr::lower_to_item_tree::lower_to_item_tree(&doc.root_component);
+            let root = crate::llr::lower_to_item_tree::lower_to_item_tree(doc, compiler_config);
             let mut output = String::new();
             crate::llr::pretty_print::pretty_print(&root, &mut output).unwrap();
             write!(destination, "{output}")?;
@@ -231,7 +228,7 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
     ) {
         debug_assert_eq!(
             relative_parent_index,
-            parent_item.borrow().item_index.get().map(|x| *x as u32).unwrap_or(parent_index)
+            *parent_item.borrow().item_index.get().unwrap_or(&parent_index)
         );
 
         // Suppose we have this:

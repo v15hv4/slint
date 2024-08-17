@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import pytest
 from slint import slint as native
@@ -11,7 +11,7 @@ Brush = native.PyBrush
 
 
 def test_property_access():
-    compiler = native.ComponentCompiler()
+    compiler = native.Compiler()
 
     compdef = compiler.build_from_source("""
         export global TestGlobal {
@@ -22,6 +22,7 @@ def test_property_access():
         export struct MyStruct {
             title: string,
             finished: bool,
+            dash-prop: bool,
         }
 
         export component Test {
@@ -36,12 +37,13 @@ def test_property_access():
             in property <MyStruct> structprop: {
                 title: "builtin",
                 finished: true,
+                dash-prop: true,
             };
             in property <image> imageprop: @image-url("../../../examples/printerdemo/ui/images/cat.jpg");
 
             callback test-callback();
         }
-    """, os.path.join(os.path.dirname(__file__), "main.slint"))
+    """, os.path.join(os.path.dirname(__file__), "main.slint")).component("Test")
     assert compdef != None
 
     instance = compdef.create()
@@ -75,11 +77,16 @@ def test_property_access():
         instance.set_property("boolprop", 0)
 
     structval = instance.get_property("structprop")
-    assert isinstance(structval, dict)
-    assert structval == {'title': 'builtin', 'finished': True}
-    instance.set_property("structprop", {'title': 'new', 'finished': False})
-    assert instance.get_property("structprop") == {
-        'title': 'new', 'finished': False}
+    assert isinstance(structval, native.PyStruct)
+    assert structval.title == "builtin"
+    assert structval.finished == True
+    assert structval.dash_prop == True
+    instance.set_property(
+        "structprop", {'title': 'new', 'finished': False, 'dash_prop': False})
+    structval = instance.get_property("structprop")
+    assert structval.title == "new"
+    assert structval.finished == False
+    assert structval.dash_prop == False
 
     imageval = instance.get_property("imageprop")
     assert imageval.width == 320
@@ -121,7 +128,7 @@ def test_property_access():
 
 
 def test_callbacks():
-    compiler = native.ComponentCompiler()
+    compiler = native.Compiler()
 
     compdef = compiler.build_from_source("""
         export global TestGlobal {
@@ -138,7 +145,7 @@ def test_callbacks():
             }
             callback void-callback();
         }
-    """, "")
+    """, "").component("Test")
     assert compdef != None
 
     instance = compdef.create()

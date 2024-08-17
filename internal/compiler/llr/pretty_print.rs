@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::fmt::{Display, Result, Write};
 
@@ -8,15 +8,15 @@ use itertools::Itertools;
 use crate::expression_tree::MinMaxOp;
 
 use super::{
-    EvaluationContext, Expression, ParentCtx, PropertyReference, PublicComponent, SubComponent,
+    CompilationUnit, EvaluationContext, Expression, ParentCtx, PropertyReference, SubComponent,
 };
 
-pub fn pretty_print(root: &PublicComponent, writer: &mut dyn Write) -> Result {
+pub fn pretty_print(root: &CompilationUnit, writer: &mut dyn Write) -> Result {
     PrettyPrinter { writer, indentation: 0 }.print_root(root)
 }
 
 pub fn pretty_print_component(
-    root: &PublicComponent,
+    root: &CompilationUnit,
     component: &SubComponent,
     writer: &mut dyn Write,
 ) -> Result {
@@ -29,16 +29,24 @@ struct PrettyPrinter<'a> {
 }
 
 impl<'a> PrettyPrinter<'a> {
-    fn print_root(&mut self, root: &PublicComponent) -> Result {
+    fn print_root(&mut self, root: &CompilationUnit) -> Result {
+        for g in &root.globals {
+            if !g.is_builtin {
+                self.print_global(root, g)?;
+            }
+        }
         for c in &root.sub_components {
             self.print_component(root, c, None)?
         }
-        self.print_component(root, &root.item_tree.root, None)
+        for p in &root.public_components {
+            self.print_component(root, &p.item_tree.root, None)?
+        }
+        Ok(())
     }
 
     fn print_component(
         &mut self,
-        root: &PublicComponent,
+        root: &CompilationUnit,
         sc: &SubComponent,
         parent: Option<ParentCtx<'_>>,
     ) -> Result {
@@ -70,13 +78,25 @@ impl<'a> PrettyPrinter<'a> {
                 if init.is_constant { " /*const*/" } else { "" }
             )?
         }
+        for (p, e) in &sc.change_callbacks {
+            self.indent()?;
+            writeln!(
+                self.writer,
+                "changed {} => {};",
+                DisplayPropertyRef(p, &ctx),
+                DisplayExpression(&e.borrow(), &ctx),
+            )?
+        }
         for ssc in &sc.sub_components {
             self.indent()?;
             writeln!(self.writer, "{} := {} {{}};", ssc.name, ssc.ty.name)?;
         }
-        for i in &sc.items {
+        for (item, geom) in std::iter::zip(&sc.items, &sc.geometries) {
             self.indent()?;
-            writeln!(self.writer, "{} := {} {{}};", i.name, i.ty.class_name)?;
+            let geometry = geom.as_ref().map_or(String::new(), |geom| {
+                format!("geometry: {}", DisplayExpression(&geom.borrow(), &ctx))
+            });
+            writeln!(self.writer, "{} := {} {{ {geometry} }};", item.name, item.ty.class_name)?;
         }
         for (idx, r) in sc.repeated.iter().enumerate() {
             self.indent()?;
@@ -89,7 +109,52 @@ impl<'a> PrettyPrinter<'a> {
         }
         for w in &sc.popup_windows {
             self.indent()?;
-            self.print_component(root, &w.root, Some(ParentCtx::new(&ctx, None)))?
+            self.print_component(root, &w.item_tree.root, Some(ParentCtx::new(&ctx, None)))?
+        }
+        self.indentation -= 1;
+        self.indent()?;
+        writeln!(self.writer, "}}")
+    }
+
+    fn print_global(&mut self, root: &CompilationUnit, global: &super::GlobalComponent) -> Result {
+        let ctx = EvaluationContext::new_global(root, global, ());
+        if global.exported {
+            write!(self.writer, "export ")?;
+        }
+        let aliases = global.aliases.join(",");
+        let aliases = if aliases.is_empty() { String::new() } else { format!(" /*{aliases}*/") };
+        writeln!(self.writer, "global {} {{{aliases}", global.name)?;
+        self.indentation += 1;
+        for ((p, init), is_const) in
+            std::iter::zip(&global.properties, &global.init_values).zip(&global.const_properties)
+        {
+            self.indent()?;
+            let init = init.as_ref().map_or(String::new(), |init| {
+                format!(
+                    ": {}{}",
+                    DisplayExpression(&init.expression.borrow(), &ctx,),
+                    if init.is_constant { "/*const*/" } else { "" }
+                )
+            });
+            writeln!(
+                self.writer,
+                "property <{}> {}{init}; //use={}{}",
+                p.ty,
+                p.name,
+                p.use_count.get(),
+                if *is_const { "  const" } else { "" }
+            )?;
+        }
+        for f in &global.functions {
+            self.indent()?;
+            writeln!(
+                self.writer,
+                "function {} ({}) -> {} {{ {} }}; ",
+                f.name,
+                f.args.iter().map(ToString::to_string).join(", "),
+                f.ret_ty,
+                DisplayExpression(&f.code, &ctx)
+            )?;
         }
         self.indentation -= 1;
         self.indent()?;
@@ -137,7 +202,7 @@ impl<T> Display for DisplayPropertyRef<'_, T> {
                 write!(f, "{}", Self(parent_reference, ctx))
             }
             PropertyReference::Global { global_index, property_index } => {
-                let g = &ctx.public_component.globals[*global_index];
+                let g = &ctx.compilation_unit.globals[*global_index];
                 write!(f, "{}.{}", g.name, g.properties[*property_index].name)
             }
             PropertyReference::Function { sub_component_path, function_index } => {
@@ -153,7 +218,7 @@ impl<T> Display for DisplayPropertyRef<'_, T> {
                 }
             }
             PropertyReference::GlobalFunction { global_index, function_index } => {
-                let g = &ctx.public_component.globals[*global_index];
+                let g = &ctx.compilation_unit.globals[*global_index];
                 write!(f, "{}.{}", g.name, g.functions[*function_index].name)
             }
         }
@@ -265,6 +330,7 @@ impl<'a, T> Display for DisplayExpression<'a, T> {
                 MinMaxOp::Min => write!(f, "min({}, {})", e(lhs), e(rhs)),
                 MinMaxOp::Max => write!(f, "max({}, {})", e(lhs), e(rhs)),
             },
+            Expression::EmptyComponentFactory => write!(f, "<empty-component-factory>",),
         }
     }
 }

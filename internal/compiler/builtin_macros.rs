@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This module contains the implementation of the builtin macros.
 //! They are just transformations that convert into some more complicated expression tree
@@ -249,7 +249,7 @@ fn rgb_macro(
                         op: '*',
                     }
                 } else {
-                    expr.maybe_convert_to(Type::Int32, &n, diag)
+                    expr.maybe_convert_to(Type::Float32, &n, diag)
                 }
             } else {
                 expr.maybe_convert_to(Type::Float32, &n, diag)

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 
@@ -99,19 +99,20 @@ public:
         cbindgen_private::slint_windowrc_set_focus_item(&inner, &item_rc, set_focus);
     }
 
-    template<typename Component>
-    void set_component(const Component &c) const
+    void set_component(const cbindgen_private::ItemTreeWeak &weak) const
     {
-        auto self_rc = (*c.self_weak.lock()).into_dyn();
-        slint_windowrc_set_component(&inner, &self_rc);
+        auto item_tree_rc = (*weak.lock()).into_dyn();
+        slint_windowrc_set_component(&inner, &item_tree_rc);
     }
 
-    template<typename Component, typename Parent>
-    void show_popup(const Parent *parent_component, cbindgen_private::Point p, bool close_on_click,
+    template<typename Component, typename Parent, typename PosGetter>
+    void show_popup(const Parent *parent_component, PosGetter pos, bool close_on_click,
                     cbindgen_private::ItemRc parent_item) const
     {
-        auto popup = Component::create(parent_component).into_dyn();
-        cbindgen_private::slint_windowrc_show_popup(&inner, &popup, p, close_on_click,
+        auto popup = Component::create(parent_component);
+        cbindgen_private::Point p = pos(popup);
+        auto popup_dyn = popup.into_dyn();
+        cbindgen_private::slint_windowrc_show_popup(&inner, &popup_dyn, p, close_on_click,
                                                     &parent_item);
     }
 
@@ -221,6 +222,11 @@ public:
         cbindgen_private::slint_register_bitmap_font(&inner, &font);
     }
 
+    inline float default_font_size() const
+    {
+        return cbindgen_private::slint_windowrc_default_font_size(&inner);
+    }
+
     /// \private
     const cbindgen_private::WindowAdapterRcOpaque &handle() const { return inner; }
 
@@ -256,15 +262,27 @@ public:
     ///
     /// Call hide() to make the window invisible again, and drop the additional
     /// strong reference.
-    void show() { inner.show(); }
+    void show()
+    {
+        private_api::assert_main_thread();
+        inner.show();
+    }
     /// Hides the window, so that it is not visible anymore. The additional strong
     /// reference on the associated component, that was created when show() was called, is
     /// dropped.
-    void hide() { inner.hide(); }
+    void hide()
+    {
+        private_api::assert_main_thread();
+        inner.hide();
+    }
 
     /// Returns the visibility state of the window. This function can return false even if you
     /// previously called show() on it, for example if the user minimized the window.
-    bool is_visible() const { return inner.is_visible(); }
+    bool is_visible() const
+    {
+        private_api::assert_main_thread();
+        return inner.is_visible();
+    }
 
     /// This function allows registering a callback that's invoked during the different phases of
     /// rendering. This allows custom rendering on top or below of the scene.
@@ -277,6 +295,7 @@ public:
     template<std::invocable<RenderingState, GraphicsAPI> F>
     std::optional<SetRenderingNotifierError> set_rendering_notifier(F &&callback) const
     {
+        private_api::assert_main_thread();
         return inner.set_rendering_notifier(std::forward<F>(callback));
     }
 
@@ -289,70 +308,109 @@ public:
     void on_close_requested(F &&callback) const
     // clang-format on
     {
+        private_api::assert_main_thread();
         return inner.on_close_requested(std::forward<F>(callback));
     }
 
     /// This function issues a request to the windowing system to redraw the contents of the window.
-    void request_redraw() const { inner.request_redraw(); }
+    void request_redraw() const
+    {
+        private_api::assert_main_thread();
+        inner.request_redraw();
+    }
 
     /// Returns the position of the window on the screen, in physical screen coordinates and
     /// including a window frame (if present).
-    slint::PhysicalPosition position() const { return inner.position(); }
+    slint::PhysicalPosition position() const
+    {
+        private_api::assert_main_thread();
+        return inner.position();
+    }
 
     /// Sets the position of the window on the screen, in physical screen coordinates and including
     /// a window frame (if present).
     /// Note that on some windowing systems, such as Wayland, this functionality is not available.
-    void set_position(const slint::LogicalPosition &pos) { inner.set_logical_position(pos); }
+    void set_position(const slint::LogicalPosition &pos)
+    {
+        private_api::assert_main_thread();
+        inner.set_logical_position(pos);
+    }
     /// Sets the position of the window on the screen, in physical screen coordinates and including
     /// a window frame (if present).
     /// Note that on some windowing systems, such as Wayland, this functionality is not available.
-    void set_position(const slint::PhysicalPosition &pos) { inner.set_physical_position(pos); }
+    void set_position(const slint::PhysicalPosition &pos)
+    {
+        private_api::assert_main_thread();
+        inner.set_physical_position(pos);
+    }
 
     /// Returns the size of the window on the screen, in physical screen coordinates and excluding
     /// a window frame (if present).
-    slint::PhysicalSize size() const { return inner.size(); }
+    slint::PhysicalSize size() const
+    {
+        private_api::assert_main_thread();
+        return inner.size();
+    }
 
     /// Resizes the window to the specified size on the screen, in logical pixels and excluding
     /// a window frame (if present).
-    void set_size(const slint::LogicalSize &size) { inner.set_logical_size(size); }
+    void set_size(const slint::LogicalSize &size)
+    {
+        private_api::assert_main_thread();
+        inner.set_logical_size(size);
+    }
     /// Resizes the window to the specified size on the screen, in physical pixels and excluding
     /// a window frame (if present).
-    void set_size(const slint::PhysicalSize &size) { inner.set_physical_size(size); }
+    void set_size(const slint::PhysicalSize &size)
+    {
+        private_api::assert_main_thread();
+        inner.set_physical_size(size);
+    }
 
     /// This function returns the scale factor that allows converting between logical and
     /// physical pixels.
-    float scale_factor() const { return inner.scale_factor(); }
+    float scale_factor() const
+    {
+        private_api::assert_main_thread();
+        return inner.scale_factor();
+    }
 
     /// Returns if the window is currently fullscreen
     bool is_fullscreen() const
     {
+        private_api::assert_main_thread();
         return cbindgen_private::slint_windowrc_is_fullscreen(&inner.handle());
     }
     /// Set or unset the window to display fullscreen.
     void set_fullscreen(bool fullscreen)
     {
+        private_api::assert_main_thread();
         cbindgen_private::slint_windowrc_set_fullscreen(&inner.handle(), fullscreen);
     }
 
     /// Returns if the window is currently maximized
     bool is_maximized() const
     {
+        private_api::assert_main_thread();
         return cbindgen_private::slint_windowrc_is_maximized(&inner.handle());
     }
     /// Maximize or unmaximize the window.
     void set_maximized(bool maximized)
     {
+        private_api::assert_main_thread();
         cbindgen_private::slint_windowrc_set_maximized(&inner.handle(), maximized);
     }
 
     /// Returns if the window is currently minimized
     bool is_minimized() const
     {
+        private_api::assert_main_thread();
         return cbindgen_private::slint_windowrc_is_minimized(&inner.handle());
     }
     /// Minimize or unminimze the window.
     void set_minimized(bool minimized)
     {
+        private_api::assert_main_thread();
         cbindgen_private::slint_windowrc_set_minimized(&inner.handle(), minimized);
     }
 
@@ -401,6 +459,7 @@ public:
     /// \a button is the button that was pressed.
     void dispatch_pointer_press_event(LogicalPosition pos, PointerEventButton button)
     {
+        private_api::assert_main_thread();
         using slint::cbindgen_private::MouseEvent;
         MouseEvent event { .tag = MouseEvent::Tag::Pressed,
                            .pressed = MouseEvent::Pressed_Body { .position = { pos.x, pos.y },
@@ -417,6 +476,7 @@ public:
     /// \a button is the button that was released.
     void dispatch_pointer_release_event(LogicalPosition pos, PointerEventButton button)
     {
+        private_api::assert_main_thread();
         using slint::cbindgen_private::MouseEvent;
         MouseEvent event { .tag = MouseEvent::Tag::Released,
                            .released = MouseEvent::Released_Body { .position = { pos.x, pos.y },
@@ -432,6 +492,7 @@ public:
     /// This event is triggered when the pointer exits the window.
     void dispatch_pointer_exit_event()
     {
+        private_api::assert_main_thread();
         using slint::cbindgen_private::MouseEvent;
         MouseEvent event { .tag = MouseEvent::Tag::Exit, .moved = {} };
         inner.dispatch_pointer_event(event);
@@ -445,6 +506,7 @@ public:
     /// \a pos represents the logical position of the pointer relative to the window.
     void dispatch_pointer_move_event(LogicalPosition pos)
     {
+        private_api::assert_main_thread();
         using slint::cbindgen_private::MouseEvent;
         MouseEvent event { .tag = MouseEvent::Tag::Moved,
                            .moved = MouseEvent::Moved_Body { .position = { pos.x, pos.y } } };
@@ -461,6 +523,7 @@ public:
     /// directions in logical pixels.
     void dispatch_pointer_scroll_event(LogicalPosition pos, float delta_x, float delta_y)
     {
+        private_api::assert_main_thread();
         using slint::cbindgen_private::MouseEvent;
         MouseEvent event { .tag = MouseEvent::Tag::Wheel,
                            .wheel = MouseEvent::Wheel_Body { .position = { pos.x, pos.y },

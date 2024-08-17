@@ -46,7 +46,7 @@ without pre-built binaries, you need to additional software:
 
 ```
 import { AboutSlint, Button, VerticalBox } from "std-widgets.slint";
-export component Demo {
+export component Demo inherits Window {
     in-out property <string> greeting <=> label.text;
     VerticalBox {
         alignment: start;
@@ -93,7 +93,7 @@ For a complete example, see [/examples/todo/node](https://github.com/slint-ui/sl
 
 ```
 import { AboutSlint, Button, VerticalBox } from "std-widgets.slint";
-export component Demo {
+export component Demo inherits Window {
     in-out property <string> greeting <=> label.text;
     VerticalBox {
         alignment: start;
@@ -300,3 +300,6 @@ component.Logic.to_upper_case = (str) => {
     return str.toUpperCase();
 };
 ```
+
+**Note**: Global singletons are instantiated once per component. When declaring multiple components for `export` to JavaScript,
+each instance will have their own instance of associated globals singletons.

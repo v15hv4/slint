@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passes that resolve the property binding expression.
 //!
@@ -63,11 +63,11 @@ fn resolve_expression(
                 &mut lookup_ctx,
             ),
             SyntaxKind::TwoWayBinding => {
-                assert!(diag.has_error(), "Two way binding should have been resolved already  (property: {property_name:?})");
+                assert!(diag.has_errors(), "Two way binding should have been resolved already  (property: {property_name:?})");
                 Expression::Invalid
             }
             _ => {
-                debug_assert!(diag.has_error());
+                debug_assert!(diag.has_errors());
                 Expression::Invalid
             }
         };
@@ -166,7 +166,7 @@ impl Expression {
             e.maybe_convert_to(ctx.property_type.clone(), &node, ctx.diag)
         } else {
             // Binding to a callback or function shouldn't happen
-            assert!(ctx.diag.has_error());
+            assert!(ctx.diag.has_errors());
             e
         }
     }
@@ -395,7 +395,7 @@ impl Expression {
             [x, y, z, w] => Some([*x, *y, *z, *w]),
             [] => None,
             _ => {
-                assert!(ctx.diag.has_error());
+                assert!(ctx.diag.has_errors());
                 None
             }
         };
@@ -627,7 +627,7 @@ impl Expression {
             let mut pos_max = 0;
             let mut pos = 0;
             let mut has_n = false;
-            while let Some(mut p) = string[pos..].find(|x| x == '{' || x == '}') {
+            while let Some(mut p) = string[pos..].find(['{', '}']) {
                 if string.len() - pos < p + 1 {
                     ctx.diag.push_error(
                         "Unescaped trailing '{' in format string. Escape '{' with '{{'".into(),
@@ -748,7 +748,7 @@ impl Expression {
             first
         } else {
             // There must be at least one member (parser should ensure that)
-            debug_assert!(ctx.diag.has_error());
+            debug_assert!(ctx.diag.has_errors());
             return Self::Invalid;
         };
 
@@ -908,6 +908,15 @@ impl Expression {
             }
             Expression::MemberFunction { base, base_node, member } => {
                 arguments.push((*base, base_node));
+                if let Expression::BuiltinMacroReference(mac, n) = *member {
+                    arguments.extend(sub_expr);
+                    return crate::builtin_macros::lower_macro(
+                        mac,
+                        n,
+                        arguments.into_iter(),
+                        ctx.diag,
+                    );
+                }
                 adjust_arg_count = 1;
                 member
             }
@@ -936,7 +945,7 @@ impl Expression {
                 }
             }
             Type::Invalid => {
-                debug_assert!(ctx.diag.has_error());
+                debug_assert!(ctx.diag.has_errors());
                 arguments.into_iter().map(|x| x.0).collect()
             }
             _ => {
@@ -1125,7 +1134,7 @@ impl Expression {
                 exp
             }
             _ => {
-                assert!(ctx.diag.has_error());
+                assert!(ctx.diag.has_errors());
                 exp
             }
         };
@@ -1443,7 +1452,7 @@ fn continue_lookup_within_element(
                 ElementType::Builtin(b) => format!("Element '{}'", b.name),
                 ElementType::Native(_) => unreachable!("the native pass comes later"),
                 ElementType::Error => {
-                    assert!(ctx.diag.has_error());
+                    assert!(ctx.diag.has_errors());
                     return;
                 }
             };
@@ -1522,7 +1531,7 @@ fn resolve_two_way_bindings(
                         let lhs_lookup = elem.borrow().lookup_property(prop_name);
                         if lhs_lookup.property_type == Type::Invalid {
                             // An attempt to resolve this already failed when trying to resolve the property type
-                            assert!(diag.has_error());
+                            assert!(diag.has_errors());
                             continue;
                         }
                         let mut lookup_ctx = LookupCtx {
@@ -1674,7 +1683,7 @@ pub fn resolve_two_way_binding(
             None
         }
         Expression::Invalid => {
-            debug_assert!(ctx.diag.has_error());
+            debug_assert!(ctx.diag.has_errors());
             None
         }
         _ => {

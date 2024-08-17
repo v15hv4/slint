@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // This file is the entry point for the vscode extension (not the browser one)
 
@@ -9,7 +9,6 @@ import * as path from "path";
 import { existsSync } from "fs";
 import * as vscode from "vscode";
 
-import { PropertiesViewProvider } from "./properties_webview";
 import * as common from "./common";
 
 import {
@@ -20,7 +19,6 @@ import {
 } from "vscode-languageclient/node";
 
 let statusBar: vscode.StatusBarItem;
-let properties_provider: PropertiesViewProvider;
 
 const program_extension = process.platform === "win32" ? ".exe" : "";
 
@@ -154,7 +152,7 @@ function startClient(
                 event.oldState === State.Running
             ) {
                 cl.outputChannel.appendLine(
-                    "The Slint Language Server crashed. This is a bug.\nPlease open an issue on https://github.com/slint-ui/slint/issues",
+                    "The Slint Language Server crashed. This is a bug. Please open an issue on https://github.com/slint-ui/slint/issues"
                 );
                 cl.outputChannel.show();
                 vscode.commands.executeCommand("workbench.action.output.focus");
@@ -193,7 +191,7 @@ export function activate(context: vscode.ExtensionContext) {
             );
     }
 
-    [statusBar, properties_provider] = common.activate(context, (cl, ctx) =>
+    statusBar = common.activate(context, (cl, ctx) =>
         startClient(cl, ctx),
     );
 }

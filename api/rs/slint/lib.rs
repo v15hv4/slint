@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore buildrs
 
@@ -9,7 +9,7 @@
 This crate is the main entry point for embedding user interfaces designed with
 [Slint](https://slint.rs/) in Rust programs.
 */
-#![doc = concat!("If you are new to Slint, start with the [Walk-through **tutorial**](https://slint.dev/releases/", env!("CARGO_PKG_VERSION"), "/docs/quickstart/rust)")]
+#![doc = concat!("If you are new to Slint, start with the [Walk-through **tutorial**](https://slint.dev/releases/", env!("CARGO_PKG_VERSION"), "/docs/slint/src/quickstart)")]
 /*! If you are already familiar with Slint, the following topics provide related information.
 
 ## Topics
@@ -71,11 +71,11 @@ build = "build.rs"
 edition = "2021"
 
 [dependencies]
-slint = "1.6.0"
+slint = "1.7.0"
 ...
 
 [build-dependencies]
-slint-build = "1.6.0"
+slint-build = "1.7.0"
 ```
 
 Use the API of the slint-build crate in the `build.rs` file:
@@ -106,11 +106,10 @@ cargo generate --git https://github.com/slint-ui/slint-rust-template
 
 ## Generated components
 
-Currently, only the last component in a `.slint` source file is mapped to a Rust structure that be instantiated. We are tracking the
-resolution of this limitation in <https://github.com/slint-ui/slint/issues/784>.
+Exported component from the macro or the main file that inherit `Window` or `Dialog` is mapped to a Rust structure.
 
-The component is generated and re-exported to the location of the [`include_modules!`]  or [`slint!`] macro. It is represented
-as a struct with the same name as the component.
+The components are generated and re-exported to the location of the [`include_modules!`] or [`slint!`] macro.
+It is represented as a struct with the same name as the component.
 
 For example, if you have
 
@@ -185,6 +184,9 @@ For each callback
 The global can be accessed with the [`ComponentHandle::global()`] function, or with [`Global::get()`]
 
 See the [documentation of the `Global` trait](Global) for an example.
+
+**Note**: Global singletons are instantiated once per component. When declaring multiple components for `export` to Rust,
+each instance will have their own instance of associated globals singletons.
 */
 
 #![warn(missing_docs)]
@@ -330,7 +332,7 @@ pub mod android;
 /// Helper type that helps checking that the generated code is generated for the right version
 #[doc(hidden)]
 #[allow(non_camel_case_types)]
-pub struct VersionCheck_1_6_0;
+pub struct VersionCheck_1_8_0;
 
 #[cfg(doctest)]
 mod compile_fail_tests;

@@ -1,4 +1,4 @@
-<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial -->
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
 
 # Slint-node (Beta)
 
@@ -85,7 +85,7 @@ export component MainWindow inherits Window {
 }
 ```
 
-The exported component is exposed as a type constructor. The type constructor takes as parameter
+Each exported Window component is exposed as a type constructor. The type constructor takes as parameter
 an object which allow to initialize the value of public properties or callbacks.
 
 **`main.js`**
@@ -142,6 +142,37 @@ let component = new ui.MyComponent();
 component.clicked = function() { console.log("hello"); };
 // emit a callback
 component.clicked();
+```
+
+### Functions
+
+Functions in Slint can be defined using the `function` keyword.
+
+**`ui/my-component.slint`**
+
+```slint
+export component MyComponent inherits Window {
+    width: 400px;
+    height: 200px;
+
+    public function my-function() -> int {
+        return 42;
+    }
+}
+```
+
+If the function is marked `public`, it can also be called from JavaScript.
+
+**`main.js`**
+
+```js
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile("ui/my-component.slint");
+let component = new ui.MyComponent();
+
+// call a public function
+let result = component.my_function();
 ```
 
 ### Type Mappings

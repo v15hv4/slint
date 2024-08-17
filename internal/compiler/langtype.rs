@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -507,12 +507,18 @@ impl ElementType {
                         builtin.additional_accepted_child_types.keys().cloned().collect();
                     valid_children.sort();
 
-                    return Err(format!(
-                        "{} is not allowed within {}. Only {} are valid children",
-                        name,
-                        builtin.native_class.class_name,
-                        valid_children.join(" ")
-                    ));
+                    let err = if valid_children.is_empty() {
+                        format!("{} cannot have children elements", builtin.native_class.class_name,)
+                    } else {
+                        format!(
+                            "{} is not allowed within {}. Only {} are valid children",
+                            name,
+                            builtin.native_class.class_name,
+                            valid_children.join(" ")
+                        )
+                    };
+
+                    return Err(err);
                 }
             }
             _ => {}
@@ -605,6 +611,17 @@ impl ElementType {
         match self {
             Self::Component(c) => c,
             _ => panic!("should be a component because of the repeater_component pass"),
+        }
+    }
+
+    /// Returns the Slint type name if applicable (for example `Rectangle` or `MyButton` when `component MyButton {}` is used as `MyButton` element)
+    pub fn type_name(&self) -> Option<&str> {
+        match self {
+            ElementType::Component(component) => Some(&component.id),
+            ElementType::Builtin(b) => Some(&b.name),
+            ElementType::Native(_) => None, // Too late, caller should call this function before the native class lowering
+            ElementType::Error => None,
+            ElementType::Global => None,
         }
     }
 }

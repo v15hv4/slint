@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 mod interpreter;
 pub use interpreter::*;
@@ -80,5 +80,5 @@ pub fn set_quit_on_last_window_closed(
 #[napi]
 pub fn init_testing() {
     #[cfg(feature = "testing")]
-    i_slint_backend_testing::init_integration_test();
+    i_slint_backend_testing::init_integration_test_with_mock_time();
 }

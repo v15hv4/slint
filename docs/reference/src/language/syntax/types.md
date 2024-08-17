@@ -10,7 +10,7 @@ All properties in Slint have a type. Slint knows these basic types:
 | `brush`              | A brush is a special type that can be either initialized from a color or a gradient specification. See the [Colors and Brushes Section](#colors-and-brushes) for more information.                                                                                                                                                               | transparent   |
 | `color`              | RGB color with an alpha channel, with 8 bit precision for each channel. CSS color names as well as the hexadecimal color encodings are supported, such as `#RRGGBBAA` or `#RGB`.                                                                                                                                                                 | transparent   |
 | `duration`           | Type for the duration of animations. A suffix like `ms` (millisecond) or `s` (second) is used to indicate the precision.                                                                                                                                                                                                                         | 0ms           |
-| `easing`             | Property animation allow specifying an easing curve. Valid values are `linear` (values are interpolated linearly) and the [four common cubiz-bezier functions known from CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/easing-function#Keywords_for_common_cubic-bezier_easing_functions): `ease`, `ease_in`, `ease_in_out`, `ease_out`. | linear        |
+| `easing`             | Property animation allow specifying an easing curve. See [animations](animations.md) for list of values.                                                                                                                                                                                                                                         | linear        |
 | `float`              | Signed, 32-bit floating point number. Numbers with a `%` suffix are automatically divided by 100, so for example `30%` is the same as `0.30`.                                                                                                                                                                                                    | 0             |
 | `image`              | A reference to an image, can be initialized with the `@image-url("...")` construct                                                                                                                                                                                                                                                               | empty image   |
 | `int`                | Signed integral number.                                                                                                                                                                                                                                                                                                                          | 0             |
@@ -84,12 +84,14 @@ All colors and brushes define the following methods:
 -   **`brighter(factor: float) -> brush`**
 
     Returns a new color derived from this color but has its brightness increased by the specified factor.
+    This is done by converting the color to the HSV color space and multiplying the brightness (value) with (1 + factor).
     For example if the factor is 0.5 (or for example 50%) the returned color is 50% brighter. Negative factors
     decrease the brightness.
 
 -   **`darker(factor: float) -> brush`**
 
     Returns a new color derived from this color but has its brightness decreased by the specified factor.
+    This is done by converting the color to the HSV color space and dividing the brightness (value) by (1 + factor).
     For example if the factor is .5 (or for example 50%) the returned color is 50% darker. Negative factors
     increase the brightness.
 
@@ -105,7 +107,7 @@ All colors and brushes define the following methods:
     Returns a new color with the opacity decreased by `factor`.
     The transparency is obtained by multiplying the alpha channel by `(1 - factor)`.
 
--  **`with_alpha(alpha: float) -> brush`**
+-  **`with-alpha(alpha: float) -> brush`**
 
     Returns a new color with the alpha value set to `alpha` (between 0 and 1)
 
@@ -146,12 +148,12 @@ export component Example inherits Window {
 
 ### Radial Gradients
 
-Linear gradiants are like real gradiant but the colors is interpolated in a circle instead of
-along a line. To describe a readial gradiant, use the `@radial-gradient` macro with the following signature:
+Radial gradients are like linear gradients but the colors are interpolated circularly instead of
+along a line. To describe a radial gradient, use the `@radial-gradient` macro with the following signature:
 
 **`@radial-gradient(circle, color percentage, color percentage, ...)`**
 
-The first parameter to the macro is always `circle` because only circular radients are supported.
+The first parameter to the macro is always `circle` because only circular gradients are supported.
 The syntax is otherwise based on the CSS `radial-gradient` function.
 
 Example:
@@ -214,7 +216,7 @@ The default value of a struct, is initialized with all its fields set to their d
 
 ### Anonymous Structures
 
-Declare anonymous structures using `{ identifier1: type2, identifier1: type2 }`
+Declare anonymous structures using `{ identifier1: type1, identifier2: type2 }`
 syntax, and initialize them using
 `{ identifier1: expression1, identifier2: expression2  }`.
 
@@ -286,9 +288,10 @@ conversions are allowed between some types for convenience.
 
 The following conversions are possible:
 
--   `int` can be converted implicitly to `float` and vice-versa
+-   `int` can be converted implicitly to `float` and vice-versa.
+     When converting from `float` to `int`, the value is truncated.
 -   `int` and `float` can be converted implicitly to `string`
--   `physical-length` and `length` can be converted implicitly to each other only in
+-   `physical-length`, `relative-font-size`, and `length` can be converted implicitly to each other only in
     context where the pixel ratio is known.
 -   the units type (`length`, `physical-length`, `duration`, ...) can't be converted to numbers (`float` or `int`)
     but they can be divided by themselves to result in a number. Similarly, a number can be multiplied by one of
@@ -297,7 +300,7 @@ The following conversions are possible:
 -   Struct types convert with another struct type if they have the same property names and their types can be converted.
     The source struct can have either missing properties, or extra properties. But not both.
 -   Arrays generally don't convert between each other. Array literals can be converted if the element types are convertible.
--   String can be converted to float by using the `to-float` function. That function returns 0 if the string isen't
+-   String can be converted to float by using the `to-float` function. That function returns 0 if the string isn't
     a valid number. You can check with `is-float()` if the string contains a valid number
 
 ```slint,no-preview
@@ -314,5 +317,6 @@ export component Example {
     property<string> xxx: "42.1";
     property<float> xxx1: xxx.to-float(); // 42.1
     property<bool> xxx2: xxx.is-float(); // true
+    property<int> xxx3: 45.8; // 45
 }
 ```

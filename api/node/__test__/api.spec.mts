@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import test from 'ava'
 import * as path from 'node:path';
@@ -23,7 +23,12 @@ test('loadFile', (t) => {
         { instanceOf: CompileError }
     );
 
-    t.is(error?.message, "Could not compile " + errorPath);
+    const formattedDiagnostics = error?.diagnostics
+    .map((d) =>
+      `[${d.fileName}:${d.lineNumber}:${d.columnNumber}] ${d.message}`
+    )
+    .join("\n");
+    t.is(error?.message, "Could not compile " + errorPath + `\nDiagnostics:\n${formattedDiagnostics}`);
     t.deepEqual(error?.diagnostics, [
         {
             columnNumber: 18,
@@ -97,7 +102,12 @@ test('loadSource', (t) => {
         { instanceOf: CompileError }
     );
 
-    t.is(error?.message, "Could not compile " + path);
+    const formattedDiagnostics = error?.diagnostics
+    .map((d) =>
+      `[${d.fileName}:${d.lineNumber}:${d.columnNumber}] ${d.message}`
+    )
+    .join("\n");
+    t.is(error?.message, "Could not compile " + path + `\nDiagnostics:\n${formattedDiagnostics}`);
     // console.log(error?.diagnostics)
     t.deepEqual(error?.diagnostics, [
         {

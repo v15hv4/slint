@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This wasm library can be loaded from JS to load and display the content of .slint files
 #![cfg(target_arch = "wasm32")]
@@ -73,6 +73,7 @@ pub async fn compile_from_string_with_style(
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
 
+    #[allow(deprecated)]
     let mut compiler = slint_interpreter::ComponentCompiler::default();
     if !style.is_empty() {
         compiler.set_style(style)

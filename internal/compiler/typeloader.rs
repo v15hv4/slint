@@ -1,17 +1,17 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::diagnostics::{BuildDiagnostics, SourceFileVersion, Spanned};
 use crate::object_tree::{self, Document, ExportedName, Exports};
 use crate::parser::{syntax_nodes, NodeOrToken, SyntaxKind, SyntaxToken};
 use crate::typeregister::TypeRegister;
-use crate::CompilerConfiguration;
-use crate::{fileaccess, parser};
+use crate::{expression_tree, CompilerConfiguration};
+use crate::{fileaccess, langtype, layout, parser};
 use core::future::Future;
 use itertools::Itertools;
 
@@ -29,7 +29,8 @@ struct LoadedDocuments {
 
 pub enum ImportKind {
     ImportList(syntax_nodes::ImportSpecifier),
-    ModuleReexport(syntax_nodes::ExportModule), // re-export all types, as per export * from "foo".
+    /// re-export types, as per `export ... from "foo"``.
+    ModuleReexport(syntax_nodes::ExportsList),
 }
 
 pub struct ImportedTypes {
@@ -65,6 +66,728 @@ impl ImportedName {
         };
 
         ImportedName { internal_name, external_name }
+    }
+}
+
+/// This function makes a snapshot of the current state of the type loader.
+/// This snapshot includes everything: Elements, Components, known types, ...
+/// and can be used to roll back to earlier states in the compilation process.
+///
+/// One way this is used is to create a raw `TypeLoader` for analysis purposes
+/// or to load a set of changes, see if those compile and then role back
+///
+/// The result may be `None` if the `TypeLoader` is actually in the process
+/// of loading more documents and is `Some` `TypeLoader` with a copy off all
+/// state connected with the original `TypeLoader`.
+pub fn snapshot(type_loader: &TypeLoader) -> Option<TypeLoader> {
+    let mut snapshotter = Snapshotter {
+        component_map: HashMap::new(),
+        element_map: HashMap::new(),
+        type_register_map: HashMap::new(),
+        keep_alive: Vec::new(),
+        keep_alive_elements: Vec::new(),
+    };
+    snapshotter.snapshot_type_loader(type_loader)
+}
+
+/// This function makes a snapshot of the current state of the type loader.
+/// This snapshot includes everything: Elements, Components, known types, ...
+/// and can be used to roll back to earlier states in the compilation process.
+///
+/// One way this is used is to create a raw `TypeLoader` for analysis purposes
+/// or to load a set of changes, see if those compile and then role back
+///
+/// The result may be `None` if the `TypeLoader` is actually in the process
+/// of loading more documents and is `Some` `TypeLoader` with a copy off all
+/// state connected with the original `TypeLoader`.
+///
+/// The Document will be added to the type_loader after it was snapshotted as well.
+pub(crate) fn snapshot_with_extra_doc(
+    type_loader: &TypeLoader,
+    doc: &object_tree::Document,
+) -> Option<TypeLoader> {
+    let mut snapshotter = Snapshotter {
+        component_map: HashMap::new(),
+        element_map: HashMap::new(),
+        type_register_map: HashMap::new(),
+        keep_alive: Vec::new(),
+        keep_alive_elements: Vec::new(),
+    };
+    let mut result = snapshotter.snapshot_type_loader(type_loader);
+
+    snapshotter.create_document(doc);
+    let new_doc = snapshotter.snapshot_document(doc);
+
+    snapshotter.finalize();
+
+    if let Some(doc_node) = &new_doc.node {
+        let path = doc_node.source_file.path().to_path_buf();
+        if let Some(r) = &mut result {
+            r.all_documents.docs.insert(path, new_doc);
+        }
+    }
+
+    result
+}
+
+pub(crate) struct Snapshotter {
+    component_map:
+        HashMap<by_address::ByAddress<Rc<object_tree::Component>>, Weak<object_tree::Component>>,
+    element_map:
+        HashMap<by_address::ByAddress<object_tree::ElementRc>, Weak<RefCell<object_tree::Element>>>,
+    type_register_map:
+        HashMap<by_address::ByAddress<Rc<RefCell<TypeRegister>>>, Rc<RefCell<TypeRegister>>>,
+
+    keep_alive: Vec<(Rc<object_tree::Component>, Rc<object_tree::Component>)>,
+    keep_alive_elements: Vec<(object_tree::ElementRc, object_tree::ElementRc)>,
+}
+
+impl Snapshotter {
+    fn snapshot_globals(&mut self, type_loader: &TypeLoader) {
+        let registry = type_loader.global_type_registry.clone();
+        registry
+            .borrow()
+            .all_elements()
+            .iter()
+            .filter_map(|(_, ty)| match ty {
+                langtype::ElementType::Component(c) if c.is_global() => Some(c),
+                _ => None,
+            })
+            .for_each(|c| {
+                self.create_component(c);
+            });
+    }
+
+    fn finalize(&mut self) {
+        let mut elements = std::mem::take(&mut self.keep_alive_elements);
+
+        while !elements.is_empty() {
+            for (s, t) in elements.iter_mut() {
+                self.snapshot_element(s, &mut t.borrow_mut());
+            }
+            elements = std::mem::take(&mut self.keep_alive_elements);
+        }
+    }
+
+    fn snapshot_type_loader(&mut self, type_loader: &TypeLoader) -> Option<TypeLoader> {
+        self.snapshot_globals(type_loader);
+
+        let all_documents = self.snapshot_loaded_documents(&type_loader.all_documents)?;
+
+        self.finalize();
+
+        Some(TypeLoader {
+            all_documents,
+            global_type_registry: self.snapshot_type_register(&type_loader.global_type_registry),
+            compiler_config: type_loader.compiler_config.clone(),
+            style: type_loader.style.clone(),
+        })
+    }
+
+    pub(crate) fn snapshot_type_register(
+        &mut self,
+        type_register: &Rc<RefCell<TypeRegister>>,
+    ) -> Rc<RefCell<TypeRegister>> {
+        if let Some(r) = self.type_register_map.get(&by_address::ByAddress(type_register.clone())) {
+            return r.clone();
+        }
+
+        let tr = Rc::new(RefCell::new(TypeRegister::default()));
+        self.type_register_map.insert(by_address::ByAddress(type_register.clone()), tr.clone());
+
+        *tr.borrow_mut() = self.snapshot_type_register_impl(type_register);
+
+        tr
+    }
+
+    fn snapshot_type_register_impl(
+        &mut self,
+        type_register: &Rc<RefCell<TypeRegister>>,
+    ) -> TypeRegister {
+        type_register.borrow().snapshot(self)
+    }
+
+    fn snapshot_loaded_documents(
+        &mut self,
+        loaded_documents: &LoadedDocuments,
+    ) -> Option<LoadedDocuments> {
+        if !loaded_documents.currently_loading.is_empty() {
+            return None;
+        }
+
+        loaded_documents.docs.values().for_each(|d| self.create_document(d));
+
+        Some(LoadedDocuments {
+            docs: loaded_documents
+                .docs
+                .iter()
+                .map(|(p, d)| (p.clone(), self.snapshot_document(d)))
+                .collect(),
+            currently_loading: Default::default(),
+        })
+    }
+
+    fn create_document(&mut self, document: &object_tree::Document) {
+        document.inner_components.iter().for_each(|ic| {
+            let _ = self.create_component(ic);
+        });
+    }
+
+    fn snapshot_document(&mut self, document: &object_tree::Document) -> object_tree::Document {
+        let inner_components = document
+            .inner_components
+            .iter()
+            .map(|ic| {
+                Weak::upgrade(&self.use_component(ic))
+                    .expect("Components can get upgraded at this point")
+            })
+            .collect();
+        let exports = document.exports.snapshot(self);
+
+        object_tree::Document {
+            node: document.node.clone(),
+            inner_components,
+            inner_types: document.inner_types.clone(),
+            local_registry: document.local_registry.snapshot(self),
+            custom_fonts: document.custom_fonts.clone(),
+            exports,
+            embedded_file_resources: document.embedded_file_resources.clone(),
+            used_types: RefCell::new(self.snapshot_used_sub_types(&document.used_types.borrow())),
+        }
+    }
+
+    pub(crate) fn create_component(
+        &mut self,
+        component: &Rc<object_tree::Component>,
+    ) -> Rc<object_tree::Component> {
+        let input_address = by_address::ByAddress(component.clone());
+
+        let parent_element = if let Some(pe) = component.parent_element.upgrade() {
+            Rc::downgrade(&self.use_element(&pe))
+        } else {
+            Weak::default()
+        };
+
+        let result = Rc::new_cyclic(|weak| {
+            self.component_map.insert(input_address, weak.clone());
+
+            let root_element = self.create_element(&component.root_element);
+
+            let optimized_elements = RefCell::new(
+                component
+                    .optimized_elements
+                    .borrow()
+                    .iter()
+                    .map(|e| self.create_element(e))
+                    .collect(),
+            );
+
+            let child_insertion_point = RefCell::new(
+                component
+                    .child_insertion_point
+                    .borrow()
+                    .as_ref()
+                    .map(|(e, s, n)| (self.use_element(e), *s, n.clone())),
+            );
+
+            let popup_windows = RefCell::new(
+                component
+                    .popup_windows
+                    .borrow()
+                    .iter()
+                    .map(|p| self.snapshot_popup_window(p))
+                    .collect(),
+            );
+            let timers = RefCell::new(
+                component.timers.borrow().iter().map(|p| self.snapshot_timer(p)).collect(),
+            );
+            let root_constraints = RefCell::new(
+                self.snapshot_layout_constraints(&component.root_constraints.borrow()),
+            );
+
+            object_tree::Component {
+                node: component.node.clone(),
+                id: component.id.clone(),
+                child_insertion_point,
+                exported_global_names: RefCell::new(
+                    component.exported_global_names.borrow().clone(),
+                ),
+                init_code: RefCell::new(component.init_code.borrow().clone()),
+                inherits_popup_window: std::cell::Cell::new(component.inherits_popup_window.get()),
+                optimized_elements,
+                parent_element,
+                popup_windows,
+                timers,
+                private_properties: RefCell::new(component.private_properties.borrow().clone()),
+                root_constraints,
+                root_element,
+            }
+        });
+        self.keep_alive.push((component.clone(), result.clone()));
+        result
+    }
+
+    pub(crate) fn use_component(
+        &self,
+        component: &Rc<object_tree::Component>,
+    ) -> Weak<object_tree::Component> {
+        self.component_map
+            .get(&by_address::ByAddress(component.clone()))
+            .expect("Component (Weak!) must exist at this point.")
+            .clone()
+    }
+
+    pub(crate) fn create_element(
+        &mut self,
+        element: &object_tree::ElementRc,
+    ) -> object_tree::ElementRc {
+        let enclosing_component = if let Some(ec) = element.borrow().enclosing_component.upgrade() {
+            self.use_component(&ec)
+        } else {
+            Weak::default()
+        };
+
+        let elem = element.borrow();
+
+        let r = Rc::new_cyclic(|weak| {
+            self.element_map.insert(by_address::ByAddress(element.clone()), weak.clone());
+
+            let children = elem.children.iter().map(|c| self.create_element(c)).collect();
+
+            RefCell::new(object_tree::Element {
+                id: elem.id.clone(),
+                enclosing_component,
+                children,
+                debug: elem.debug.clone(),
+                ..Default::default()
+            })
+        });
+
+        self.keep_alive_elements.push((element.clone(), r.clone()));
+        r
+    }
+
+    fn create_and_snapshot_element(
+        &mut self,
+        element: &object_tree::ElementRc,
+    ) -> object_tree::ElementRc {
+        let target = self.create_element(element);
+        self.snapshot_element(element, &mut target.borrow_mut());
+        target
+    }
+
+    pub(crate) fn use_element(&self, element: &object_tree::ElementRc) -> object_tree::ElementRc {
+        Weak::upgrade(
+            &self
+                .element_map
+                .get(&by_address::ByAddress(element.clone()))
+                .expect("Elements should have been known at this point")
+                .clone(),
+        )
+        .expect("Must be able to upgrade here")
+    }
+
+    fn snapshot_element(
+        &mut self,
+        element: &object_tree::ElementRc,
+        target_element: &mut object_tree::Element,
+    ) {
+        let elem = element.borrow();
+
+        target_element.base_type = self.snapshot_element_type(&elem.base_type);
+
+        target_element.transitions = elem
+            .transitions
+            .iter()
+            .map(|t| object_tree::Transition {
+                is_out: t.is_out,
+                state_id: t.state_id.clone(),
+                property_animations: t
+                    .property_animations
+                    .iter()
+                    .map(|(nr, sl, el)| {
+                        (nr.snapshot(self), sl.clone(), self.create_and_snapshot_element(el))
+                    })
+                    .collect(),
+                node: t.node.clone(),
+            })
+            .collect();
+
+        target_element.bindings = elem
+            .bindings
+            .iter()
+            .map(|(k, v)| {
+                let bm = v.borrow();
+                let binding = self.snapshot_binding_expression(&bm);
+                (k.clone(), RefCell::new(binding))
+            })
+            .collect();
+        target_element.states = elem
+            .states
+            .iter()
+            .map(|s| object_tree::State {
+                id: s.id.clone(),
+                condition: s.condition.clone(),
+                property_changes: s
+                    .property_changes
+                    .iter()
+                    .map(|(nr, expr, spc)| {
+                        let nr = nr.snapshot(self);
+                        let expr = self.snapshot_expression(expr);
+                        (nr, expr, spc.clone())
+                    })
+                    .collect(),
+            })
+            .collect();
+        target_element.repeated =
+            elem.repeated.as_ref().map(|r| object_tree::RepeatedElementInfo {
+                model: self.snapshot_expression(&r.model),
+                model_data_id: r.model_data_id.clone(),
+                index_id: r.index_id.clone(),
+                is_conditional_element: r.is_conditional_element,
+                is_listview: r.is_listview.as_ref().map(|lv| object_tree::ListViewInfo {
+                    viewport_y: lv.viewport_y.snapshot(self),
+                    viewport_height: lv.viewport_height.snapshot(self),
+                    viewport_width: lv.viewport_width.snapshot(self),
+                    listview_height: lv.listview_height.snapshot(self),
+                    listview_width: lv.listview_width.snapshot(self),
+                }),
+            });
+
+        target_element.accessibility_props = object_tree::AccessibilityProps(
+            elem.accessibility_props.0.iter().map(|(k, v)| (k.clone(), v.snapshot(self))).collect(),
+        );
+        target_element.geometry_props =
+            elem.geometry_props.as_ref().map(|gp| object_tree::GeometryProps {
+                x: gp.x.snapshot(self),
+                y: gp.y.snapshot(self),
+                width: gp.width.snapshot(self),
+                height: gp.height.snapshot(self),
+            });
+        target_element.property_declarations = elem
+            .property_declarations
+            .iter()
+            .map(|(k, v)| {
+                let decl = object_tree::PropertyDeclaration {
+                    property_type: v.property_type.clone(),
+                    node: v.node.clone(),
+                    expose_in_public_api: v.expose_in_public_api,
+                    is_alias: v.is_alias.as_ref().map(|a| a.snapshot(self)),
+                    visibility: v.visibility,
+                    pure: v.pure,
+                };
+                (k.clone(), decl)
+            })
+            .collect();
+        target_element.layout_info_prop =
+            elem.layout_info_prop.as_ref().map(|(n1, n2)| (n1.snapshot(self), n2.snapshot(self)));
+        target_element.property_analysis = RefCell::new(elem.property_analysis.borrow().clone());
+
+        target_element.change_callbacks = elem.change_callbacks.clone();
+        target_element.child_of_layout = elem.child_of_layout;
+        target_element.default_fill_parent = elem.default_fill_parent;
+        target_element.has_popup_child = elem.has_popup_child;
+        target_element.inline_depth = elem.inline_depth;
+        target_element.is_component_placeholder = elem.is_component_placeholder;
+        target_element.is_flickable_viewport = elem.is_flickable_viewport;
+        target_element.is_legacy_syntax = elem.is_legacy_syntax;
+        target_element.item_index = elem.item_index.clone();
+        target_element.item_index_of_first_children = elem.item_index_of_first_children.clone();
+        target_element.named_references = elem.named_references.snapshot(self);
+    }
+
+    fn snapshot_binding_expression(
+        &mut self,
+        binding_expression: &expression_tree::BindingExpression,
+    ) -> expression_tree::BindingExpression {
+        expression_tree::BindingExpression {
+            expression: self.snapshot_expression(&binding_expression.expression),
+            span: binding_expression.span.clone(),
+            priority: binding_expression.priority,
+            animation: binding_expression.animation.as_ref().map(|pa| match pa {
+                object_tree::PropertyAnimation::Static(element) => {
+                    object_tree::PropertyAnimation::Static(
+                        self.create_and_snapshot_element(element),
+                    )
+                }
+                object_tree::PropertyAnimation::Transition { state_ref, animations } => {
+                    object_tree::PropertyAnimation::Transition {
+                        state_ref: self.snapshot_expression(state_ref),
+                        animations: animations
+                            .iter()
+                            .map(|tpa| object_tree::TransitionPropertyAnimation {
+                                state_id: tpa.state_id,
+                                is_out: tpa.is_out,
+                                animation: self.create_and_snapshot_element(&tpa.animation),
+                            })
+                            .collect(),
+                    }
+                }
+            }),
+            analysis: binding_expression.analysis.as_ref().map(|a| {
+                expression_tree::BindingAnalysis {
+                    is_in_binding_loop: a.is_in_binding_loop.clone(),
+                    is_const: a.is_const,
+                    no_external_dependencies: a.no_external_dependencies,
+                }
+            }),
+            two_way_bindings: binding_expression
+                .two_way_bindings
+                .iter()
+                .map(|twb| twb.snapshot(self))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn snapshot_element_type(
+        &mut self,
+        element_type: &langtype::ElementType,
+    ) -> langtype::ElementType {
+        // Components need to get adapted, the rest is fine I think...
+        match element_type {
+            langtype::ElementType::Component(component) => {
+                // Some components that will get compiled out later...
+                langtype::ElementType::Component(
+                    Weak::upgrade(&self.use_component(component))
+                        .expect("I can unwrap at this point"),
+                )
+            }
+            _ => element_type.clone(),
+        }
+    }
+
+    fn snapshot_used_sub_types(
+        &mut self,
+        used_types: &object_tree::UsedSubTypes,
+    ) -> object_tree::UsedSubTypes {
+        let globals = used_types
+            .globals
+            .iter()
+            .map(|component| {
+                Weak::upgrade(&self.use_component(component)).expect("Looking at a known component")
+            })
+            .collect();
+        let structs_and_enums = used_types.structs_and_enums.clone();
+        let sub_components = used_types
+            .sub_components
+            .iter()
+            .map(|component| {
+                Weak::upgrade(&self.use_component(component)).expect("Looking at a known component")
+            })
+            .collect();
+        object_tree::UsedSubTypes { globals, structs_and_enums, sub_components }
+    }
+
+    fn snapshot_popup_window(
+        &mut self,
+        popup_window: &object_tree::PopupWindow,
+    ) -> object_tree::PopupWindow {
+        object_tree::PopupWindow {
+            component: Weak::upgrade(&self.use_component(&popup_window.component))
+                .expect("Looking at a known component"),
+            x: popup_window.x.snapshot(self),
+            y: popup_window.y.snapshot(self),
+            close_on_click: popup_window.close_on_click,
+            parent_element: self.use_element(&popup_window.parent_element),
+        }
+    }
+
+    fn snapshot_timer(&mut self, popup_window: &object_tree::Timer) -> object_tree::Timer {
+        object_tree::Timer {
+            interval: popup_window.interval.snapshot(self),
+            running: popup_window.running.snapshot(self),
+            triggered: popup_window.triggered.snapshot(self),
+        }
+    }
+
+    fn snapshot_layout_constraints(
+        &mut self,
+        layout_constraints: &layout::LayoutConstraints,
+    ) -> layout::LayoutConstraints {
+        layout::LayoutConstraints {
+            min_width: layout_constraints.min_width.as_ref().map(|lc| lc.snapshot(self)),
+            max_width: layout_constraints.max_width.as_ref().map(|lc| lc.snapshot(self)),
+            min_height: layout_constraints.min_height.as_ref().map(|lc| lc.snapshot(self)),
+            max_height: layout_constraints.max_height.as_ref().map(|lc| lc.snapshot(self)),
+            preferred_width: layout_constraints
+                .preferred_width
+                .as_ref()
+                .map(|lc| lc.snapshot(self)),
+            preferred_height: layout_constraints
+                .preferred_height
+                .as_ref()
+                .map(|lc| lc.snapshot(self)),
+            horizontal_stretch: layout_constraints
+                .horizontal_stretch
+                .as_ref()
+                .map(|lc| lc.snapshot(self)),
+            vertical_stretch: layout_constraints
+                .vertical_stretch
+                .as_ref()
+                .map(|lc| lc.snapshot(self)),
+            fixed_width: layout_constraints.fixed_width,
+            fixed_height: layout_constraints.fixed_height,
+        }
+    }
+
+    fn snapshot_expression(
+        &mut self,
+        expr: &expression_tree::Expression,
+    ) -> expression_tree::Expression {
+        use expression_tree::Expression;
+        match expr {
+            Expression::CallbackReference(nr, node_or_token) => {
+                Expression::CallbackReference(nr.snapshot(self), node_or_token.clone())
+            }
+            Expression::PropertyReference(nr) => Expression::PropertyReference(nr.snapshot(self)),
+            Expression::FunctionReference(nr, node_or_token) => {
+                Expression::FunctionReference(nr.snapshot(self), node_or_token.clone())
+            }
+            Expression::MemberFunction { base, base_node, member } => Expression::MemberFunction {
+                base: Box::new(self.snapshot_expression(base)),
+                base_node: base_node.clone(),
+                member: Box::new(self.snapshot_expression(member)),
+            },
+            Expression::ElementReference(el) => {
+                Expression::ElementReference(if let Some(el) = el.upgrade() {
+                    Rc::downgrade(&el)
+                } else {
+                    Weak::default()
+                })
+            }
+            Expression::RepeaterIndexReference { element } => Expression::RepeaterIndexReference {
+                element: if let Some(el) = element.upgrade() {
+                    Rc::downgrade(&el)
+                } else {
+                    Weak::default()
+                },
+            },
+            Expression::RepeaterModelReference { element } => Expression::RepeaterModelReference {
+                element: if let Some(el) = element.upgrade() {
+                    Rc::downgrade(&el)
+                } else {
+                    Weak::default()
+                },
+            },
+            Expression::StoreLocalVariable { name, value } => Expression::StoreLocalVariable {
+                name: name.clone(),
+                value: Box::new(self.snapshot_expression(value)),
+            },
+            Expression::StructFieldAccess { base, name } => Expression::StructFieldAccess {
+                base: Box::new(self.snapshot_expression(base)),
+                name: name.clone(),
+            },
+            Expression::ArrayIndex { array, index } => Expression::ArrayIndex {
+                array: Box::new(self.snapshot_expression(array)),
+                index: Box::new(self.snapshot_expression(index)),
+            },
+            Expression::Cast { from, to } => {
+                Expression::Cast { from: Box::new(self.snapshot_expression(from)), to: to.clone() }
+            }
+            Expression::CodeBlock(exprs) => {
+                Expression::CodeBlock(exprs.iter().map(|e| self.snapshot_expression(e)).collect())
+            }
+            Expression::FunctionCall { function, arguments, source_location } => {
+                Expression::FunctionCall {
+                    function: Box::new(self.snapshot_expression(function)),
+                    arguments: arguments.iter().map(|e| self.snapshot_expression(e)).collect(),
+                    source_location: source_location.clone(),
+                }
+            }
+            Expression::SelfAssignment { lhs, rhs, op, node } => Expression::SelfAssignment {
+                lhs: Box::new(self.snapshot_expression(lhs)),
+                rhs: Box::new(self.snapshot_expression(rhs)),
+                op: *op,
+                node: node.clone(),
+            },
+            Expression::BinaryExpression { lhs, rhs, op } => Expression::BinaryExpression {
+                lhs: Box::new(self.snapshot_expression(lhs)),
+                rhs: Box::new(self.snapshot_expression(rhs)),
+                op: *op,
+            },
+            Expression::UnaryOp { sub, op } => {
+                Expression::UnaryOp { sub: Box::new(self.snapshot_expression(sub)), op: *op }
+            }
+            Expression::Condition { condition, true_expr, false_expr } => Expression::Condition {
+                condition: Box::new(self.snapshot_expression(condition)),
+                true_expr: Box::new(self.snapshot_expression(true_expr)),
+                false_expr: Box::new(self.snapshot_expression(false_expr)),
+            },
+            Expression::Array { element_ty, values } => Expression::Array {
+                element_ty: element_ty.clone(),
+                values: values.iter().map(|e| self.snapshot_expression(e)).collect(),
+            },
+            Expression::Struct { ty, values } => Expression::Struct {
+                ty: ty.clone(),
+                values: values
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.snapshot_expression(v)))
+                    .collect(),
+            },
+            Expression::PathData(path) => Expression::PathData(match path {
+                expression_tree::Path::Elements(path_elements) => expression_tree::Path::Elements(
+                    path_elements
+                        .iter()
+                        .map(|p| {
+                            expression_tree::PathElement {
+                                element_type: p.element_type.clone(), // builtin should be OK to clone
+                                bindings: p
+                                    .bindings
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k.clone(),
+                                            RefCell::new(
+                                                self.snapshot_binding_expression(&v.borrow()),
+                                            ),
+                                        )
+                                    })
+                                    .collect(),
+                            }
+                        })
+                        .collect(),
+                ),
+                expression_tree::Path::Events(ex1, ex2) => expression_tree::Path::Events(
+                    ex1.iter().map(|e| self.snapshot_expression(e)).collect(),
+                    ex2.iter().map(|e| self.snapshot_expression(e)).collect(),
+                ),
+                expression_tree::Path::Commands(ex) => {
+                    expression_tree::Path::Commands(Box::new(self.snapshot_expression(ex)))
+                }
+            }),
+            Expression::LinearGradient { angle, stops } => Expression::LinearGradient {
+                angle: Box::new(self.snapshot_expression(angle)),
+                stops: stops
+                    .iter()
+                    .map(|(e1, e2)| (self.snapshot_expression(e1), self.snapshot_expression(e2)))
+                    .collect(),
+            },
+            Expression::RadialGradient { stops } => Expression::RadialGradient {
+                stops: stops
+                    .iter()
+                    .map(|(e1, e2)| (self.snapshot_expression(e1), self.snapshot_expression(e2)))
+                    .collect(),
+            },
+            Expression::ReturnStatement(expr) => Expression::ReturnStatement(
+                expr.as_ref().map(|e| Box::new(self.snapshot_expression(e))),
+            ),
+            Expression::LayoutCacheAccess { layout_cache_prop, index, repeater_index } => {
+                Expression::LayoutCacheAccess {
+                    layout_cache_prop: layout_cache_prop.snapshot(self),
+                    index: *index,
+                    repeater_index: repeater_index
+                        .as_ref()
+                        .map(|e| Box::new(self.snapshot_expression(e))),
+                }
+            }
+            Expression::MinMax { ty, op, lhs, rhs } => Expression::MinMax {
+                ty: ty.clone(),
+                lhs: Box::new(self.snapshot_expression(lhs)),
+                rhs: Box::new(self.snapshot_expression(rhs)),
+                op: *op,
+            },
+            _ => expr.clone(),
+        }
     }
 }
 
@@ -141,6 +864,7 @@ impl TypeLoader {
         .await
     }
 
+    // This function could be async when MSRV >= 1.77, but until then, we need to return a Box
     fn load_dependencies_recursively_impl<'a: 'b, 'b>(
         state: &'a RefCell<BorrowedTypeLoader<'a>>,
         doc: &'b syntax_nodes::Document,
@@ -149,88 +873,114 @@ impl TypeLoader {
     ) -> core::pin::Pin<Box<dyn std::future::Future<Output = (Vec<ImportedTypes>, Exports)> + 'b>>
     {
         let mut foreign_imports = vec![];
-        let mut dependencies = Self::collect_dependencies(state, doc)
-            .filter_map(|mut import| {
-                let resolved_import = if let Some((path, _)) = state.borrow().tl.resolve_import_path(Some(&import.import_uri_token.clone().into()), &import.file) {
-                    path.to_string_lossy().to_string()
-                } else {
-                    import.file.clone()
-                };
-                if resolved_import.ends_with(".slint") || resolved_import.ends_with(".60") || import.file.starts_with('@') {
-                    Some(Box::pin(async move {
-                        let file = import.file.as_str();
-                        let doc_path = Self::ensure_document_loaded(
-                            state,
-                            file,
-                            Some(import.import_uri_token.clone().into()),
-                            import_stack.clone()
-                        )
-                        .await?;
-                        let mut state = state.borrow_mut();
-                        let state = &mut *state;
-                        let doc = state.tl.all_documents.docs.get(&doc_path).unwrap();
-                        match &import.import_kind {
-                            ImportKind::ImportList(imported_types) => {
-                                let mut imported_types =
-                                    ImportedName::extract_imported_names(imported_types).peekable();
-                                if imported_types.peek().is_some() {
-                                    Self::register_imported_types(doc, &import, imported_types, registry_to_populate, state.diag);
-                                } else {
-                                    state.diag.push_error("Import names are missing. Please specify which types you would like to import".into(), &import.import_uri_token.parent());
-                                }
-                                None
-                            }
-                            ImportKind::ModuleReexport(export_module_syntax_node) => {
-                                let mut exports = Exports::default();
-                                exports.add_reexports(
-                                    doc.exports.iter().map(|(exported_name, compo_or_type)| {
-                                        (
-                                            ExportedName {
-                                                name: exported_name.name.clone(),
-                                                name_ident: (**export_module_syntax_node).clone(),
-                                            },
-                                            compo_or_type.clone(),
-                                        )
-                                    }),
-                                    state.diag,
-                                );
-                                Some((exports, export_module_syntax_node.clone()))
-                            }
-                        }
-                    }))
-                } else {
-                    import.file = resolved_import;
-                    foreign_imports.push(import);
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut dependencies_futures = vec![];
+        for mut import in Self::collect_dependencies(state, doc) {
+            let resolved_import = if let Some((path, _)) = state
+                .borrow()
+                .tl
+                .resolve_import_path(Some(&import.import_uri_token.clone().into()), &import.file)
+            {
+                path.to_string_lossy().to_string()
+            } else {
+                import.file.clone()
+            };
+            if !(resolved_import.ends_with(".slint")
+                || resolved_import.ends_with(".60")
+                || import.file.starts_with('@'))
+            {
+                import.file = resolved_import;
+                foreign_imports.push(import);
+                continue;
+            }
+            dependencies_futures.push(Box::pin(async move {
+                let file = import.file.as_str();
+                let doc_path = Self::ensure_document_loaded(
+                    state,
+                    file,
+                    Some(import.import_uri_token.clone().into()),
+                    import_stack.clone(),
+                )
+                .await;
+                (import, doc_path)
+            }));
+        }
 
         Box::pin(async move {
             let mut reexports = None;
+            let mut has_star_reexport = false;
             std::future::poll_fn(|cx| {
-                dependencies.retain_mut(|fut| {
-                    let core::task::Poll::Ready(export) = fut.as_mut().poll(cx) else {
+                dependencies_futures.retain_mut(|fut| {
+                    let core::task::Poll::Ready((import, doc_path)) = fut.as_mut().poll(cx) else {
                         return true;
                     };
-                    let Some((exports, node)) = export else { return false };
-                    if reexports.is_none() {
-                        reexports = Some(exports);
-                    } else {
-                        state.borrow_mut().diag.push_error(
-                            "re-exporting modules is only allowed once per file".into(),
-                            &node,
-                        );
-                    };
+                    let Some(doc_path) = doc_path else { return false };
+                    let mut state = state.borrow_mut();
+                    let state = &mut *state;
+                    let doc = state.tl.all_documents.docs.get(&doc_path).unwrap();
+                    match &import.import_kind {
+                        ImportKind::ImportList(imported_types) => {
+                            let mut imported_types =
+                                ImportedName::extract_imported_names(imported_types).peekable();
+                            if imported_types.peek().is_some() {
+                                Self::register_imported_types(
+                                    doc,
+                                    &import,
+                                    imported_types,
+                                    registry_to_populate,
+                                    state.diag,
+                                );
+                            } else {
+                                state.diag.push_error("Import names are missing. Please specify which types you would like to import".into(), &import.import_uri_token.parent());
+                            }
+                        }
+                        ImportKind::ModuleReexport(export_module_syntax_node) => {
+                            let exports = reexports.get_or_insert_with(Exports::default);
+                            if let Some(star_reexport) = export_module_syntax_node
+                                .ExportModule()
+                                .and_then(|x| x.child_token(SyntaxKind::Star))
+                            {
+                                if has_star_reexport {
+                                    state.diag.push_error("re-exporting modules is only allowed once per file".into(), &star_reexport);
+                                    return false;
+                                }
+                                has_star_reexport = true;
+                                exports.add_reexports(
+                                    doc.exports.iter().map(|(exported_name, compo_or_type)| {
+                                        let exported_name = ExportedName {
+                                            name: exported_name.name.clone(),
+                                            name_ident: (**export_module_syntax_node).clone(),
+                                        };
+                                        (exported_name, compo_or_type.clone())
+                                    }),
+                                    state.diag,
+                                );
+                            } else if export_module_syntax_node.ExportSpecifier().next().is_none() {
+                                state.diag.push_error("Import names are missing. Please specify which types you would like to re-export".into(), export_module_syntax_node);
+                            } else {
+                                let e = export_module_syntax_node
+                                    .ExportSpecifier()
+                                    .filter_map(|e| {
+                                        let (imported_name, exported_name) =
+                                            ExportedName::from_export_specifier(&e);
+                                        let Some(r) = doc.exports.find(&imported_name) else {
+                                            state.diag.push_error(format!("No exported type called '{imported_name}' found in {doc_path:?}"), &e);
+                                            return None;
+                                        };
+                                        Some((exported_name, r))
+                                    })
+                                    .collect::<Vec<_>>();
+                                exports.add_reexports(e, state.diag);
+                            }
+                        }
+                    }
                     false
                 });
-                if dependencies.is_empty() {
+                if dependencies_futures.is_empty() {
                     core::task::Poll::Ready(())
                 } else {
                     core::task::Poll::Pending
                 }
-            })
-            .await;
+            }).await;
             (foreign_imports, reexports.unwrap_or_default())
         })
     }
@@ -426,7 +1176,7 @@ impl TypeLoader {
         ok.then_some(path_canon)
     }
 
-    /// Load a file, and its dependency not run the passes.
+    /// Load a file, and its dependency, running only the import passes.
     ///
     /// the path must be the canonical path
     pub async fn load_file(
@@ -451,7 +1201,7 @@ impl TypeLoader {
         .await;
     }
 
-    /// Load a file, and its dependency not run the passes.
+    /// Load a file, and its dependency, running the full set of passes.
     ///
     /// the path must be the canonical path
     pub async fn load_root_file(
@@ -460,11 +1210,12 @@ impl TypeLoader {
         version: SourceFileVersion,
         source_path: &Path,
         source_code: String,
+        keep_raw: bool,
         diag: &mut BuildDiagnostics,
-    ) -> PathBuf {
+    ) -> (PathBuf, Option<TypeLoader>) {
         let path = crate::pathutils::clean_path(path);
         let state = RefCell::new(BorrowedTypeLoader { tl: self, diag });
-        let (path, doc) = Self::load_file_no_pass(
+        let (path, mut doc) = Self::load_file_no_pass(
             &state,
             &path,
             version,
@@ -477,11 +1228,13 @@ impl TypeLoader {
 
         let mut state = state.borrow_mut();
         let state = &mut *state;
-        if !state.diag.has_error() {
-            crate::passes::run_passes(&doc, state.tl, state.diag).await;
-        }
+        let raw_type_loader = if !state.diag.has_errors() {
+            crate::passes::run_passes(&mut doc, state.tl, keep_raw, state.diag).await
+        } else {
+            None
+        };
         state.tl.all_documents.docs.insert(path.clone(), doc);
-        path
+        (path, raw_type_loader)
     }
 
     async fn load_file_impl<'a>(
@@ -506,7 +1259,7 @@ impl TypeLoader {
 
         let mut state = state.borrow_mut();
         let state = &mut *state;
-        if !state.diag.has_error() {
+        if !state.diag.has_errors() {
             crate::passes::run_import_passes(&doc, state.tl, state.diag);
         }
         state.tl.all_documents.docs.insert(path, doc);
@@ -536,7 +1289,7 @@ impl TypeLoader {
         )
         .await;
 
-        if state.borrow().diag.has_error() {
+        if state.borrow().diag.has_errors() {
             // If there was error (esp parse error) we don't want to report further error in this document.
             // because they might be nonsense (TODO: we should check that the parse error were really in this document).
             // But we still want to create a document to give better error messages in the root document.
@@ -663,17 +1416,19 @@ impl TypeLoader {
                 (maybe_import_uri, ImportKind::ImportList(import))
             })
             .chain(
-                // process `export * from "foo"`
-                doc.ExportsList().flat_map(|exports| exports.ExportModule()).map(|reexport| {
-                    let maybe_import_uri = reexport.child_token(SyntaxKind::StringLiteral);
-                    (maybe_import_uri, ImportKind::ModuleReexport(reexport))
+                // process `export ... from "foo"`
+                doc.ExportsList().filter_map(|exports| {
+                    exports.ExportModule().map(|reexport| {
+                        let maybe_import_uri = reexport.child_token(SyntaxKind::StringLiteral);
+                        (maybe_import_uri, ImportKind::ModuleReexport(exports))
+                    })
                 }),
             )
             .filter_map(|(maybe_import_uri, type_specifier)| {
                 let import_uri = match maybe_import_uri {
                     Some(import_uri) => import_uri,
                     None => {
-                        debug_assert!(state.borrow().diag.has_error());
+                        debug_assert!(state.borrow().diag.has_errors());
                         return None;
                     }
                 };
@@ -820,8 +1575,8 @@ fn test_dependency_loading() {
         &registry,
     ));
 
-    assert!(!test_diags.has_error());
-    assert!(!build_diagnostics.has_error());
+    assert!(!test_diags.has_errors());
+    assert!(!build_diagnostics.has_errors());
     assert!(foreign_imports.is_empty());
 }
 
@@ -862,9 +1617,9 @@ fn test_dependency_loading_from_rust() {
         &registry,
     ));
 
-    assert!(!test_diags.has_error());
+    assert!(!test_diags.has_errors());
     assert!(test_diags.is_empty()); // also no warnings
-    assert!(!build_diagnostics.has_error());
+    assert!(!build_diagnostics.has_errors());
     assert!(build_diagnostics.is_empty()); // also no warnings
     assert!(foreign_imports.is_empty());
 }
@@ -911,8 +1666,8 @@ X := XX {}
         &registry,
     ));
     assert!(ok.get());
-    assert!(!test_diags.has_error());
-    assert!(!build_diagnostics.has_error());
+    assert!(!test_diags.has_errors());
+    assert!(!build_diagnostics.has_errors());
 }
 
 #[test]
@@ -944,8 +1699,8 @@ component Foo { XX {} }
         &mut build_diagnostics,
         &registry,
     ));
-    assert!(!test_diags.has_error());
-    assert!(build_diagnostics.has_error());
+    assert!(!test_diags.has_errors());
+    assert!(build_diagnostics.has_errors());
     let diags = build_diagnostics.to_string_vec();
     assert_eq!(
         diags,
@@ -958,7 +1713,7 @@ component Foo { XX {} }
         &mut build_diagnostics,
         &registry,
     ));
-    assert!(build_diagnostics.has_error());
+    assert!(build_diagnostics.has_errors());
     let diags = build_diagnostics.to_string_vec();
     assert_eq!(
         diags,
@@ -981,7 +1736,7 @@ fn test_manual_import() {
         &mut build_diagnostics,
     ));
 
-    assert!(!build_diagnostics.has_error());
+    assert!(!build_diagnostics.has_errors());
     assert!(maybe_button_type.is_some());
 }
 
@@ -1001,7 +1756,7 @@ fn test_builtin_style() {
     let mut build_diagnostics = BuildDiagnostics::default();
     let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
-    assert!(!build_diagnostics.has_error());
+    assert!(!build_diagnostics.has_errors());
 }
 
 #[test]
@@ -1020,7 +1775,7 @@ fn test_user_style() {
     let mut build_diagnostics = BuildDiagnostics::default();
     let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
-    assert!(!build_diagnostics.has_error());
+    assert!(!build_diagnostics.has_errors());
 }
 
 #[test]
@@ -1039,7 +1794,7 @@ fn test_unknown_style() {
     let mut build_diagnostics = BuildDiagnostics::default();
     let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
-    assert!(build_diagnostics.has_error());
+    assert!(build_diagnostics.has_errors());
     let diags = build_diagnostics.to_string_vec();
     assert_eq!(diags.len(), 1);
     assert!(diags[0].starts_with("Style FooBar in not known. Use one of the builtin styles ["));
@@ -1083,8 +1838,8 @@ import { LibraryHelperType } from "@libdir/library_helper_type.slint";
         &mut build_diagnostics,
         &registry,
     ));
-    assert!(!test_diags.has_error());
-    assert!(!build_diagnostics.has_error());
+    assert!(!test_diags.has_errors());
+    assert!(!build_diagnostics.has_errors());
 }
 
 #[test]
@@ -1128,8 +1883,8 @@ import { E } from "@unknown/lib.slint";
         &mut build_diagnostics,
         &registry,
     ));
-    assert!(!test_diags.has_error());
-    assert!(build_diagnostics.has_error());
+    assert!(!test_diags.has_errors());
+    assert!(build_diagnostics.has_errors());
     let diags = build_diagnostics.to_string_vec();
     assert_eq!(diags.len(), 5);
     assert!(diags[0].starts_with(&format!(
@@ -1146,4 +1901,40 @@ import { E } from "@unknown/lib.slint";
         &diags[4],
         "HELLO:7: Cannot find requested import \"@unknown/lib.slint\" in the library search path"
     );
+}
+
+#[test]
+fn test_snapshotting() {
+    let mut type_loader = TypeLoader::new(
+        crate::typeregister::TypeRegister::builtin(),
+        crate::CompilerConfiguration::new(crate::generator::OutputFormat::Interpreter),
+        &mut BuildDiagnostics::default(),
+    );
+
+    let path = PathBuf::from("/tmp/test.slint");
+    let mut diag = BuildDiagnostics::default();
+    spin_on::spin_on(type_loader.load_file(
+        &path,
+        None,
+        &path,
+        "export component Foobar inherits Rectangle { }".to_string(),
+        false,
+        &mut diag,
+    ));
+
+    assert!(!diag.has_errors());
+
+    let doc = type_loader.get_document(&path).unwrap();
+    let c = doc.inner_components.first().unwrap();
+    assert_eq!(c.id, "Foobar");
+    let root_element = c.root_element.clone();
+    assert_eq!(root_element.borrow().base_type.to_string(), "Rectangle");
+
+    let copy = snapshot(&type_loader).unwrap();
+
+    let doc = copy.get_document(&path).unwrap();
+    let c = doc.inner_components.first().unwrap();
+    assert_eq!(c.id, "Foobar");
+    let root_element = c.root_element.clone();
+    assert_eq!(root_element.borrow().base_type.to_string(), "Rectangle");
 }

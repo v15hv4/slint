@@ -5,8 +5,11 @@ from slint import Color, ListModel, Timer, TimerMode
 import slint
 from datetime import timedelta, datetime
 import os
+import copy
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+PrinterQueueItem = slint.loader.ui.printerdemo.PrinterQueueItem
 
 
 class MainWindow(slint.loader.ui.printerdemo.MainWindow):
@@ -31,15 +34,15 @@ class MainWindow(slint.loader.ui.printerdemo.MainWindow):
 
     @slint.callback(global_name="PrinterQueue", name="start_job")
     def push_job(self, title):
-        self.printer_queue.append({
-            "status": "waiting",
-            "progress": 0,
-            "title": title,
-            "owner": "Me",
-            "pages": 1,
-            "size": "100kB",
-            "submission_date": str(datetime.now()),
-        })
+        self.printer_queue.append(PrinterQueueItem(
+            status="waiting",
+            progress=0,
+            title=title,
+            owner="Me",
+            pages=1,
+            size="100kB",
+            submission_date=str(datetime.now()),
+        ))
 
     @slint.callback(global_name="PrinterQueue")
     def cancel_job(self, index):
@@ -48,13 +51,13 @@ class MainWindow(slint.loader.ui.printerdemo.MainWindow):
     def update_jobs(self):
         if len(self.printer_queue) <= 0:
             return
-        top_item = self.printer_queue[0]
-        top_item["progress"] += 1
-        if top_item["progress"] >= 100:
+        top_item = copy.copy(self.printer_queue[0])
+        top_item.progress += 1
+        if top_item.progress >= 100:
             del self.printer_queue[0]
             if len(self.printer_queue) == 0:
                 return
-            top_item = self.printer_queue[0]
+            top_item = copy.copy(self.printer_queue[0])
         self.printer_queue[0] = top_item
 
 

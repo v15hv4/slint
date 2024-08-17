@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore abfnrtv
 
@@ -8,7 +8,15 @@ import * as monaco from "monaco-editor";
 export const slint_language = <monaco.languages.IMonarchLanguage>{
     defaultToken: "invalid",
 
-    root_keywords: ["import", "from", "export", "global", "component", "struct", "inherits"],
+    root_keywords: [
+        "import",
+        "from",
+        "export",
+        "global",
+        "component",
+        "struct",
+        "inherits",
+    ],
     inner_keywords: [
         "property",
         "callback",

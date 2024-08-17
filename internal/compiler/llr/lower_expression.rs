@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -213,6 +213,7 @@ pub fn lower_expression(
             lhs: Box::new(lower_expression(lhs, ctx)),
             rhs: Box::new(lower_expression(rhs, ctx)),
         },
+        tree_Expression::EmptyComponentFactory => llr_Expression::EmptyComponentFactory,
     }
 }
 
@@ -369,8 +370,6 @@ fn lower_show_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Ex
             .enumerate()
             .find(|(_, p)| Rc::ptr_eq(&p.component, &pop_comp))
             .unwrap();
-        let x = llr_Expression::PropertyReference(ctx.map_property_reference(&popup.x));
-        let y = llr_Expression::PropertyReference(ctx.map_property_reference(&popup.y));
         let item_ref = lower_expression(
             &tree_Expression::ElementReference(Rc::downgrade(&popup.parent_element)),
             ctx,
@@ -379,8 +378,6 @@ fn lower_show_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Ex
             function: BuiltinFunction::ShowPopupWindow,
             arguments: vec![
                 llr_Expression::NumberLiteral(popup_index as _),
-                x,
-                y,
                 llr_Expression::BoolLiteral(popup.close_on_click),
                 item_ref,
             ],
@@ -978,7 +975,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
     }
 }
 
-fn make_struct(
+pub fn make_struct(
     name: &str,
     it: impl IntoIterator<Item = (&'static str, Type, llr_Expression)>,
 ) -> llr_Expression {

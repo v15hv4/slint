@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import pytest
 from slint import load_file, CompileError
@@ -12,9 +12,27 @@ def test_load_file(caplog):
 
     assert "The property 'color' has been deprecated. Please use 'background' instead" in caplog.text
 
-    assert list(module.__dict__.keys()) == ["App"]
+    assert len(list(module.__dict__.keys())) == 6
+    assert "App" in module.__dict__
+    assert "Diag" in module.__dict__
+    assert "MyDiag" in module.__dict__
+    assert "MyData" in module.__dict__
+    assert "Secret_Struct" in module.__dict__
+    assert "Public_Struct" in module.__dict__
     instance = module.App()
     del instance
+    instance = module.MyDiag()
+    del instance
+
+    struct_instance = module.MyData()
+    struct_instance.name = "Test"
+    struct_instance.age = 42
+
+    struct_instance = module.MyData(name="testing")
+    assert struct_instance.name == "testing"
+
+    assert module.Public_Struct is module.Secret_Struct
+    assert module.MyDiag is module.Diag
 
 
 def test_load_file_fail():
@@ -35,7 +53,13 @@ def test_load_file_wrapper():
     instance.say_hello = lambda x: "from here: " + x
     assert instance.say_hello("wohoo") == "from here: wohoo"
 
+    assert instance.plus_one(42) == 43
+
     assert instance.MyGlobal.global_prop == "This is global"
+
+    assert instance.MyGlobal.minus_one(100) == 99
+
+    assert instance.SecondGlobal.second == "second"
 
     del instance
 

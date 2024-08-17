@@ -1,12 +1,30 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 export global MyGlobal {
     in-out property <string> global-prop: "This is global";
     callback global-callback(string) -> string;
+    public function minus-one(value: int) {
+        return value - 1;
+    }
 }
 
-export component App {
+export global SecondGlobal {
+    out property <string> second: "second";
+}
+
+export struct MyData {
+    name: string,
+    age: int,
+}
+
+struct Secret-Struct {
+    balance: int,
+}
+
+export { Secret-Struct as Public-Struct }
+
+export component App inherits Window {
     in-out property <string> hello: "World";
     callback say-hello(string) -> string;
     callback say_hello_again(string) -> string;
@@ -26,7 +44,15 @@ export component App {
         return MyGlobal.global-callback(arg);
     }
 
+    public function plus-one(value: int) {
+        return value + 1;
+    }
+
     Rectangle {
         color: red;
     }
 }
+
+component Diag inherits Window { }
+
+export { Diag as MyDiag }

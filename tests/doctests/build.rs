@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("cargo:rustc-env=TEST_FUNCTIONS={}", tests_file_path.to_string_lossy());
+    println!("cargo:rustc-env=SLINT_ENABLE_EXPERIMENTAL_FEATURES=1");
 
     Ok(())
 }

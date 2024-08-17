@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore nesw
 
@@ -1254,6 +1254,7 @@ pub struct WindowItem {
     pub background: Property<Brush>,
     pub title: Property<SharedString>,
     pub no_frame: Property<bool>,
+    pub resize_border_width: Property<LogicalLength>,
     pub always_on_top: Property<bool>,
     pub icon: Property<crate::graphics::Image>,
     pub default_font_family: Property<SharedString>,
@@ -1443,7 +1444,11 @@ declare_item_vtable! {
 }
 
 declare_item_vtable! {
-    fn slint_get_TextVTable() -> TextVTable for Text
+    fn slint_get_ComplexTextVTable() -> ComplexTextVTable for ComplexText
+}
+
+declare_item_vtable! {
+    fn slint_get_SimpleTextVTable() -> SimpleTextVTable for SimpleText
 }
 
 declare_item_vtable! {

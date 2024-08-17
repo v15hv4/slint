@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <!-- Copyright © SixtyFPS GmbH <info@slint.dev> -->
-<!-- # SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial -->
+<!-- # SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Software-3.0 -->
 
 <language name="Slint" version="1" kateversion="5.0" section="Sources" extensions="*.slint" mimetype="text/slint" indenter="cstyle" license="GPL" author="info@slint.dev" priority="6">
 <highlighting>
@@ -42,6 +42,8 @@
       <item>if</item>
       <item>for</item>
       <item>return</item>
+      <item>changed</item>
+      <item>pure</item>
       <item>@tr</item>
       <item>@children</item>
       <item>@image-url</item>

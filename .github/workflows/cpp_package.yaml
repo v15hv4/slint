@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 name: Build the C++ binary package
 
@@ -9,7 +9,7 @@ on:
 
 env:
     MACOSX_DEPLOYMENT_TARGET: "11.0"
-    # Keep in sync with features in nightly_snapshot.yaml, slint_tool_binary.yaml, and api/node/Cargo.toml
+    # Keep in sync with features in nightly_snapshot.yaml, slint_tool_binary.yaml, api/node/Cargo.toml, and api/python/Cargo.toml
     SLINT_BINARY_FEATURES: "-DSLINT_FEATURE_BACKEND_LINUXKMS_NOSEAT=ON -DSLINT_FEATURE_BACKEND_WINIT=ON -DSLINT_FEATURE_RENDERER_FEMTOVG=ON -DSLINT_FEATURE_RENDERER_SKIA=ON -DSLINT_FEATURE_RENDERER_SOFTWARE=ON"
 
 jobs:
@@ -20,11 +20,11 @@ jobs:
             CARGO_INCREMENTAL: false
         strategy:
             matrix:
-                os: [ubuntu-20.04, macOS-11, windows-2022]
+                os: [ubuntu-20.04, macOS-12, windows-2022]
                 include:
                     - os: ubuntu-20.04
                       package_suffix: linux
-                    - os: macOS-11
+                    - os: macOS-12
                       package_suffix: macos
                     - os: windows-2022
                       package_suffix: windows

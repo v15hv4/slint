@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This pass moves all declaration of properties or callback to the root
 
@@ -95,6 +95,11 @@ fn do_move_declarations(component: &Rc<Component>) {
         fixup_reference(&mut p.x);
         fixup_reference(&mut p.y);
         visit_all_named_references(&p.component, &mut fixup_reference)
+    });
+    component.timers.borrow_mut().iter_mut().for_each(|t| {
+        fixup_reference(&mut t.interval);
+        fixup_reference(&mut t.running);
+        fixup_reference(&mut t.triggered);
     });
     component.init_code.borrow_mut().iter_mut().for_each(|expr| {
         visit_named_references_in_expression(expr, &mut fixup_reference);

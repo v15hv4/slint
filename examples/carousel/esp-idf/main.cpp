@@ -36,12 +36,10 @@ extern "C" void app_main(void)
         .max_transfer_sz = DRAW_BUF_SIZE * sizeof(uint16_t),
     };
     bsp_display_new(&bsp_disp_cfg, &panel_handle, &io_handle);
-#if defined(EXAMPLE_TARGET_S3_BOX)
     esp_lcd_touch_handle_t touch_handle = NULL;
+#if defined(EXAMPLE_TARGET_S3_BOX)
     const bsp_touch_config_t bsp_touch_cfg = {};
     bsp_touch_new(&bsp_touch_cfg, &touch_handle);
-#else
-    std::optional<esp_lcd_touch_handle_t> touch_handle;
 #endif
 
     /* Set display brightness to 100% */
@@ -49,8 +47,12 @@ extern "C" void app_main(void)
 
     static std::vector<slint::platform::Rgb565Pixel> buffer(BSP_LCD_H_RES * BSP_LCD_V_RES);
 
-    slint_esp_init(slint::PhysicalSize({ BSP_LCD_H_RES, BSP_LCD_V_RES }), panel_handle,
-                   touch_handle, buffer);
+    slint_esp_init(SlintPlatformConfiguration {
+            .size = slint::PhysicalSize({ BSP_LCD_H_RES, BSP_LCD_V_RES }),
+            .panel_handle = panel_handle,
+            .touch_handle = touch_handle,
+            .buffer1 = buffer,
+            .color_swap_16 = true });
 
     auto carousel_demo = MainWindow::create();
 

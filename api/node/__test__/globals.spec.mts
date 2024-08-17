@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import test from 'ava';
 
@@ -11,9 +11,9 @@ test('get/set global properties', (t) => {
   let definition = compiler.buildFromSource(`
     export global Global { in-out property <string> name: "Initial"; }
     export component App {}`, "");
-  t.not(definition, null);
+  t.not(definition.App, null);
 
-  let instance = definition!.create();
+  let instance = definition.App!.create();
   t.not(instance, null);
 
   t.is(instance!.getGlobalProperty("Global", "name"), "Initial");
@@ -102,9 +102,9 @@ test('invoke global callback', (t) => {
   }
   export component App {}
   `, "");
-  t.not(definition, null);
+  t.not(definition.App, null);
 
-  let instance = definition!.create();
+  let instance = definition.App!.create();
   t.not(instance, null);
 
   t.throws(() => {

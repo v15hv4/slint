@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This module contains the [`SoftwareRenderer`] and related types.
 //!
@@ -12,11 +12,13 @@ mod fixed;
 mod fonts;
 
 use self::fonts::GlyphRenderer;
-use crate::api::Window;
+use crate::api::{PlatformError, Window};
 use crate::graphics::rendering_metrics_collector::{RefreshMode, RenderingMetricsCollector};
-use crate::graphics::{BorderRadius, PixelFormat, SharedImageBuffer, SharedPixelBuffer};
+use crate::graphics::{
+    BorderRadius, PixelFormat, Rgba8Pixel, SharedImageBuffer, SharedPixelBuffer,
+};
 use crate::item_rendering::{CachedRenderingData, DirtyRegion, RenderBorderRectangle, RenderImage};
-use crate::items::{ItemRc, TextOverflow};
+use crate::items::{ItemRc, TextOverflow, TextWrap};
 use crate::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
     PhysicalPx, PointLengths, RectLengths, ScaleFactor, SizeLengths,
@@ -63,32 +65,22 @@ pub enum RepaintBufferType {
     SwappedBuffers,
 }
 
-/// This module is just a trick to make the Window public only when `feature = "software-renderer-rotation"`
-#[allow(unused)]
-mod internal {
-    use super::*;
-    /// This enum describes the rotation that should be applied to the contents rendered by the software renderer.
-    ///
-    /// Argument to be passed in [`SoftwareRenderer::set_rendering_rotation`].
-    #[non_exhaustive]
-    #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-    pub enum RenderingRotation {
-        /// No rotation
-        #[default]
-        NoRotation,
-        /// Rotate 90° to the right
-        Rotate90,
-        /// 180° rotation (upside-down)
-        Rotate180,
-        /// Rotate 90° to the left
-        Rotate270,
-    }
+/// This enum describes the rotation that should be applied to the contents rendered by the software renderer.
+///
+/// Argument to be passed in [`SoftwareRenderer::set_rendering_rotation`].
+#[non_exhaustive]
+#[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum RenderingRotation {
+    /// No rotation
+    #[default]
+    NoRotation,
+    /// Rotate 90° to the right
+    Rotate90,
+    /// 180° rotation (upside-down)
+    Rotate180,
+    /// Rotate 90° to the left
+    Rotate270,
 }
-
-#[cfg(feature = "software-renderer-rotation")]
-pub use internal::RenderingRotation;
-#[cfg(not(feature = "software-renderer-rotation"))]
-use internal::RenderingRotation;
 
 impl RenderingRotation {
     fn is_transpose(self) -> bool {
@@ -256,17 +248,67 @@ impl PhysicalRegion {
 
     /// Returns an iterator over the rectangles in this region.
     /// Each rectangle is represented by its position and its size.
+    /// They do not overlap.
     pub fn iter(
         &self,
     ) -> impl Iterator<Item = (crate::api::PhysicalPosition, crate::api::PhysicalSize)> + '_ {
-        self.iter_box().map(|r| {
-            let r = r.to_rect();
-            (
-                crate::api::PhysicalPosition { x: r.origin.x as _, y: r.origin.y as _ },
-                crate::api::PhysicalSize { width: r.width() as _, height: r.height() as _ },
-            )
+        let mut line_ranges = Vec::<core::ops::Range<i16>>::new();
+        let mut begin_line = 0;
+        let mut end_line = 0;
+        core::iter::from_fn(move || loop {
+            match line_ranges.pop() {
+                Some(r) => {
+                    return Some((
+                        crate::api::PhysicalPosition { x: r.start as _, y: begin_line as _ },
+                        crate::api::PhysicalSize {
+                            width: r.len() as _,
+                            height: (end_line - begin_line) as _,
+                        },
+                    ));
+                }
+                None => {
+                    begin_line = end_line;
+                    end_line = match region_line_ranges(self, begin_line, &mut line_ranges) {
+                        Some(end_line) => end_line,
+                        None => return None,
+                    };
+                    line_ranges.reverse();
+                }
+            }
         })
     }
+}
+
+#[test]
+fn region_iter() {
+    let mut region = PhysicalRegion::default();
+    assert_eq!(region.iter().next(), None);
+    region.rectangles[0] =
+        euclid::Box2D::from_origin_and_size(euclid::point2(1, 1), euclid::size2(2, 3));
+    region.rectangles[1] =
+        euclid::Box2D::from_origin_and_size(euclid::point2(6, 2), euclid::size2(3, 20));
+    region.rectangles[2] =
+        euclid::Box2D::from_origin_and_size(euclid::point2(0, 10), euclid::size2(10, 5));
+    assert_eq!(region.iter().next(), None);
+    region.count = 1;
+    let r = |x, y, width, height| {
+        (crate::api::PhysicalPosition { x, y }, crate::api::PhysicalSize { width, height })
+    };
+
+    let mut iter = region.iter();
+    assert_eq!(iter.next(), Some(r(1, 1, 2, 3)));
+    assert_eq!(iter.next(), None);
+    drop(iter);
+
+    region.count = 3;
+    let mut iter = region.iter();
+    assert_eq!(iter.next(), Some(r(1, 1, 2, 1))); // the two first rectangle could have been merged
+    assert_eq!(iter.next(), Some(r(1, 2, 2, 2)));
+    assert_eq!(iter.next(), Some(r(6, 2, 3, 2)));
+    assert_eq!(iter.next(), Some(r(6, 4, 3, 6)));
+    assert_eq!(iter.next(), Some(r(0, 10, 10, 5)));
+    assert_eq!(iter.next(), Some(r(6, 15, 3, 7)));
+    assert_eq!(iter.next(), None);
 }
 
 /// Computes what are the x ranges that intersects the region for specified y line.
@@ -405,15 +447,11 @@ impl SoftwareRenderer {
     /// Set how the window need to be rotated in the buffer.
     ///
     /// This is typically used to implement screen rotation in software
-    #[cfg(feature = "software-renderer-rotation")]
-    // This API is under a feature flag because it is experimental for now.
-    // It should be a property of the Window instead (set via dispatch_event?)
     pub fn set_rendering_rotation(&self, rotation: RenderingRotation) {
         self.rotation.set(rotation)
     }
 
     /// Return the current rotation. See [`Self::set_rendering_rotation()`]
-    #[cfg(feature = "software-renderer-rotation")]
     pub fn rendering_rotation(&self) -> RenderingRotation {
         self.rotation.get()
     }
@@ -440,16 +478,17 @@ impl SoftwareRenderer {
     /// Render the window to the given frame buffer.
     ///
     /// The renderer uses a cache internally and will only render the part of the window
-    /// which are dirty. The `extra_draw_region` is an extra regin which will also
+    /// which are dirty. The `extra_draw_region` is an extra region which will also
     /// be rendered. (eg: the previous dirty region in case of double buffering)
     /// This function returns the region that was rendered.
     ///
-    /// The pixel_stride is the size, in pixel, between two line in the buffer
+    /// The pixel_stride is the size (in pixels) between two lines in the buffer.
+    /// It is equal `width` if the screen is not rotated, and `height` if the screen is rotated by 90°.
     /// The buffer needs to be big enough to contain the window, so its size must be at least
     /// `pixel_stride * height`, or `pixel_stride * width` if the screen is rotated by 90°.
     ///
     /// Returns the physical dirty region for this frame, excluding the extra_draw_region,
-    /// in the window frame of reference. It affected by the screen rotation.
+    /// in the window frame of reference. It is affected by the screen rotation.
     pub fn render(&self, buffer: &mut [impl TargetPixel], pixel_stride: usize) -> PhysicalRegion {
         let Some(window) = self.maybe_window_adapter.borrow().as_ref().and_then(|w| w.upgrade())
         else {
@@ -628,8 +667,9 @@ impl RendererSealed for SoftwareRenderer {
         text: &str,
         max_width: Option<LogicalLength>,
         scale_factor: ScaleFactor,
+        text_wrap: TextWrap,
     ) -> LogicalSize {
-        fonts::text_size(font_request, text, max_width, scale_factor)
+        fonts::text_size(font_request, text, max_width, scale_factor, text_wrap)
     }
 
     fn text_input_byte_offset_for_position(
@@ -802,6 +842,43 @@ impl RendererSealed for SoftwareRenderer {
     fn set_window_adapter(&self, window_adapter: &Rc<dyn WindowAdapter>) {
         *self.maybe_window_adapter.borrow_mut() = Some(Rc::downgrade(window_adapter));
         self.partial_cache.borrow_mut().clear();
+    }
+
+    fn take_snapshot(&self) -> Result<SharedPixelBuffer<Rgba8Pixel>, PlatformError> {
+        let Some(window_adapter) =
+            self.maybe_window_adapter.borrow().as_ref().and_then(|w| w.upgrade())
+        else {
+            return Err(
+                "SoftwareRenderer's screenshot called without a window adapter present".into()
+            );
+        };
+
+        let window = window_adapter.window();
+        let size = window.size();
+
+        let Some((width, height)) = size.width.try_into().ok().zip(size.height.try_into().ok())
+        else {
+            // Nothing to render
+            return Err("take_snapshot() called on window with invalid size".into());
+        };
+
+        let mut target_buffer = SharedPixelBuffer::<crate::graphics::Rgb8Pixel>::new(width, height);
+
+        self.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        self.render(target_buffer.make_mut_slice(), width as usize);
+        // ensure that caches are clear for the next call
+        self.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+
+        let mut target_buffer_with_alpha =
+            SharedPixelBuffer::<Rgba8Pixel>::new(target_buffer.width(), target_buffer.height());
+        for (target_pixel, source_pixel) in target_buffer_with_alpha
+            .make_mut_slice()
+            .iter_mut()
+            .zip(target_buffer.as_slice().iter())
+        {
+            *target_pixel.rgb_mut() = *source_pixel;
+        }
+        Ok(target_buffer_with_alpha)
     }
 }
 
@@ -2234,7 +2311,13 @@ impl<'a, T: ProcessScene> crate::item_rendering::ItemRenderer for SceneBuilder<'
         }
     }
 
-    fn draw_text(&mut self, text: Pin<&crate::items::Text>, _: &ItemRc, size: LogicalSize) {
+    fn draw_text(
+        &mut self,
+        text: Pin<&dyn crate::item_rendering::RenderText>,
+        _: &ItemRc,
+        size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
         let string = text.text();
         if string.trim().is_empty() {
             return;
@@ -2265,14 +2348,15 @@ impl<'a, T: ProcessScene> crate::item_rendering::ItemRenderer for SceneBuilder<'
         match font {
             fonts::Font::PixelFont(pf) => {
                 let layout = fonts::text_layout_for_font(&pf, &font_request, self.scale_factor);
+                let (horizontal_alignment, vertical_alignment) = text.alignment();
 
                 let paragraph = TextParagraphLayout {
                     string: &string,
                     layout,
                     max_width: max_size.width_length(),
                     max_height: max_size.height_length(),
-                    horizontal_alignment: text.horizontal_alignment(),
-                    vertical_alignment: text.vertical_alignment(),
+                    horizontal_alignment,
+                    vertical_alignment,
                     wrap: text.wrap(),
                     overflow: text.overflow(),
                     single_line: false,
@@ -2283,14 +2367,15 @@ impl<'a, T: ProcessScene> crate::item_rendering::ItemRenderer for SceneBuilder<'
             #[cfg(all(feature = "software-renderer-systemfonts", not(target_arch = "wasm32")))]
             fonts::Font::VectorFont(vf) => {
                 let layout = fonts::text_layout_for_font(&vf, &font_request, self.scale_factor);
+                let (horizontal_alignment, vertical_alignment) = text.alignment();
 
                 let paragraph = TextParagraphLayout {
                     string: &string,
                     layout,
                     max_width: max_size.width_length(),
                     max_height: max_size.height_length(),
-                    horizontal_alignment: text.horizontal_alignment(),
-                    vertical_alignment: text.vertical_alignment(),
+                    horizontal_alignment,
+                    vertical_alignment,
                     wrap: text.wrap(),
                     overflow: text.overflow(),
                     single_line: false,

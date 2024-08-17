@@ -3,10 +3,10 @@
 
 The Slint compiler [called by the build system](cmake_reference.md#slint_target_sources)
 will generate a header file for the root `.slint` file.
-This header file will contain a `class` with the same name as the root
-component.
 
-This class will have the following public member functions:
+This header file will contain a `class` for every exported component from the main file that inherits from `Window` or `Dialog`.
+
+These classes have the same name as the component will have the following public member functions:
 
 * A `create` constructor function and a destructor.
 * A `show` function, which will show the component on the screen.
@@ -26,6 +26,7 @@ This class will have the following public member functions:
   * `invoke_<callback_name>` function which takes the callback argument as parameter and call the callback.
   * `on_<callback_name>` function which takes a functor as an argument and sets the callback handler
      for this callback. the functor must accept the type parameter of the callback
+* For each public function declared in the root component, an `invoke_<function_name>` function to call the function.
 * A `global` function to access exported global singletons.
 
 The `create` function creates a new instance of the component, which is wrapped
@@ -48,10 +49,13 @@ Let's assume we've this code in our `.slint` file:
 ```slint,no-preview
 export component SampleComponent inherits Window {
     in-out property<int> counter;
+    // note that dashes will be replaced by underscores in the generated code
     in-out property<string> user_name;
     callback hello;
+    public function do-something(x: int) -> bool { return x > 0; } 
     // ... maybe more elements here
 }
+
 ```
 
 This generates a header with the following contents (edited for documentation purpose)
@@ -94,6 +98,9 @@ public:
     /// Sets the callback handler for the `hello` callback.
     template<typename Functor> inline void on_hello (Functor && callback_handler) const;
 
+    /// Call this function to call the `do-something` function.
+    inline bool invoke_do_something (int x) const;
+
     /// Returns a reference to a global singleton that's exported.
     ///
     /// **Note:** Only globals that are exported or re-exported from the main .slint file will
@@ -134,3 +141,8 @@ previous section, you can access `Logic` like this:
         return SharedString(arg);
     });
 ```
+
+:::{note}
+Global singletons are instantiated once per component. When declaring multiple components for `export` to C++,
+each instance will have their own instance of associated globals singletons.
+:::

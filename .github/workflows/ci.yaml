@@ -1,5 +1,5 @@
 # Copyright © SixtyFPS GmbH <info@slint.dev>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 name: CI
 
@@ -22,21 +22,27 @@ jobs:
             CARGO_PROFILE_DEV_DEBUG: 0
             CARGO_INCREMENTAL: false
             RUST_BACKTRACE: 1
+            SLINT_EMIT_DEBUG_INFO: 1
         strategy:
             matrix:
-                os: [ubuntu-22.04, macos-11, windows-2022]
+                os: [ubuntu-22.04, macos-12, windows-2022]
                 rust_version: [stable, "1.73"]
                 include:
                     - os: windows-2022
                       extra_args: "--exclude ffmpeg --exclude gstreamer-player"
-                    - os: macos-11
+                    - os: macos-12
                       extra_args: "--exclude ffmpeg --exclude gstreamer-player"
                     - os: windows-2022
                       rust_version: "beta"
                       extra_args: "--exclude ffmpeg --exclude gstreamer-player"
+                    - os: ubuntu-22.04
+                      rust_version: "nightly"
                 exclude:
-                    - os: macos-11
+                    - os: macos-12
                       rust_version: "1.73"
+                    # We already test 1.73 and nightly. Stable is in the middle and already covered by other jobs
+                    - os: ubuntu-22.04
+                      rust_version: "stable"
 
         runs-on: ${{ matrix.os }}
 
@@ -59,6 +65,9 @@ jobs:
             - name: Install gstreamer and libunwind (Linux)
               if: runner.os == 'Linux'
               run: sudo apt-get install libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            - name: Upgrade LLVM for Skia build on Windows
+              if: runner.os == 'Windows'
+              run: choco upgrade llvm
             - name: Setup headless display
               uses: pyvista/setup-headless-display-action@v1
             - uses: ./.github/actions/setup-rust
@@ -71,6 +80,7 @@ jobs:
               run: |
                   if [ ! -f ./Cargo.lock ]; then
                     cargo update -p clap --precise 4.4.18
+                    cargo update -p rowan --precise 0.15.15
                   fi
             - name: Run tests (not qt)
               run: DYLD_FRAMEWORK_PATH=$Qt5_DIR/lib cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python -- --skip=_qt::t
@@ -98,7 +108,7 @@ jobs:
             RUST_BACKTRACE: 1
         strategy:
             matrix:
-                os: [ubuntu-22.04, macos-11, windows-2022]
+                os: [ubuntu-22.04, macos-12, windows-2022]
 
         runs-on: ${{ matrix.os }}
 
@@ -112,6 +122,9 @@ jobs:
                   version: "5.15.2"
                   setup-python: false
                   cache: true
+            - name: Upgrade LLVM for Skia build on Windows
+              if: runner.os == 'Windows'
+              run: choco upgrade llvm
             - name: Setup headless display
               uses: pyvista/setup-headless-display-action@v1
             - uses: ./.github/actions/install-nodejs
@@ -141,7 +154,7 @@ jobs:
             RUST_BACKTRACE: full
         strategy:
             matrix:
-                os: [ubuntu-22.04, macos-11, windows-2022]
+                os: [ubuntu-22.04, macos-12, windows-2022]
 
         runs-on: ${{ matrix.os }}
 
@@ -211,9 +224,16 @@ jobs:
             CARGO_INCREMENTAL: false
             RUST_BACKTRACE: 1
             CARGO_PROFILE_DEV_DEBUG: 0
+            SLINT_EMIT_DEBUG_INFO: 1
         strategy:
             matrix:
-                os: [ubuntu-22.04, macos-12, windows-2022]
+                include:
+                    - os: macos-12
+                      rust_version: "1.73"
+                    - os: windows-2022
+                      rust_version: "nightly"
+                    - os: ubuntu-22.04
+                      rust_version: "stable"
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v4
@@ -346,27 +366,20 @@ jobs:
             - name: Check
               run: cross check --target=armv7-unknown-linux-gnueabihf -p slint-cpp --no-default-features --features=testing,interpreter,std
 
-    uefi-demo:
-        env:
-            CARGO_PROFILE_DEV_DEBUG: 0
-        runs-on: ubuntu-22.04
-        steps:
-            - uses: actions/checkout@v4
-            - uses: ./.github/actions/setup-rust
-              with:
-                  toolchain: stable
-                  target: x86_64-unknown-uefi
-            - name: Check
-              run: cargo check --target=x86_64-unknown-uefi -p uefi-demo
-
     docs:
         uses: ./.github/workflows/build_docs.yaml
+        secrets: inherit
+        with:
+          release: false
+          app-id: ${{ vars.READ_WRITE_APP_ID }}
 
     wasm:
         uses: ./.github/workflows/wasm_editor_and_interpreter.yaml
 
     wasm_demo:
         uses: ./.github/workflows/wasm_demos.yaml
+        with:
+          build_artifacts: false
 
     tree-sitter:
         uses: ./.github/workflows/tree_sitter.yaml

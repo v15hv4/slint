@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*! This crate just expose the function used by the C++ integration */
 
@@ -150,6 +150,11 @@ pub extern "C" fn slint_string_to_float(string: &SharedString, value: &mut f32) 
         }
         Err(_) => false,
     }
+}
+
+#[no_mangle]
+pub extern "C" fn slint_debug(string: &SharedString) {
+    i_slint_core::debug_log!("{string}");
 }
 
 #[cfg(not(feature = "std"))]

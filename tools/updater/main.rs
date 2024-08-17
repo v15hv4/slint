@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //!
 //! Tool to change the syntax or reformat a .slint file
@@ -71,7 +71,7 @@ fn process_rust_file(source: String, mut file: impl Write, args: &Cli) -> std::i
         let len = syntax_node.text_range().end().into();
         let mut state = init_state(&syntax_node, &mut diag);
         visit_node(syntax_node, &mut file, &mut state, args)?;
-        if diag.has_error() {
+        if diag.has_errors() {
             file.write_all(&code.as_bytes()[len..])?;
             diag.print();
         }
@@ -103,7 +103,7 @@ fn process_markdown_file(source: String, mut file: impl Write, args: &Cli) -> st
         let len = syntax_node.text_range().end().into();
         let mut state = init_state(&syntax_node, &mut diag);
         visit_node(syntax_node, &mut file, &mut state, args)?;
-        if diag.has_error() {
+        if diag.has_errors() {
             file.write_all(&code.as_bytes()[len..])?;
             diag.print();
         }
@@ -128,7 +128,7 @@ fn process_file(
     let len = syntax_node.node.text_range().end().into();
     let mut state = init_state(&syntax_node, &mut diag);
     visit_node(syntax_node, &mut file, &mut state, args)?;
-    if diag.has_error() {
+    if diag.has_errors() {
         file.write_all(&source.as_bytes()[len..])?;
         diag.print();
     }
@@ -222,7 +222,7 @@ fn visit_node(
                     .borrow()
                     .children
                     .iter()
-                    .find(|c| c.borrow().debug.first().map_or(false, |n| n.0.node == node.node))
+                    .find(|c| c.borrow().debug.first().map_or(false, |n| n.node.node == node.node))
                     .cloned()
             } else if let Some(parent_co) = &state.current_component {
                 if node.parent().map_or(false, |n| n.kind() == SyntaxKind::Component) {

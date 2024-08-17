@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::diagnostics::{BuildDiagnostics, SourceLocation, Spanned};
 use crate::langtype::{BuiltinElement, EnumerationValue, Type};
@@ -60,6 +60,13 @@ pub enum BuiltinFunction {
     Rgb,
     Hsv,
     ColorScheme,
+    Use24HourFormat,
+    MonthDayCount,
+    MonthOffset,
+    FormatDate,
+    DateNow,
+    ValidDate,
+    ParseDate,
     TextInputFocused,
     SetTextInputFocused,
     ImplicitLayoutInfo(Orientation),
@@ -68,6 +75,7 @@ pub enum BuiltinFunction {
     RegisterCustomFontByMemory,
     RegisterBitmapFont,
     Translate,
+    UpdateTimers,
 }
 
 #[derive(Debug, Clone)]
@@ -244,9 +252,33 @@ impl BuiltinFunction {
                 )),
                 args: vec![],
             },
+            BuiltinFunction::MonthDayCount => Type::Function {
+                return_type: Box::new(Type::Int32),
+                args: vec![Type::Int32, Type::Int32],
+            },
+            BuiltinFunction::MonthOffset => Type::Function {
+                return_type: Box::new(Type::Int32),
+                args: vec![Type::Int32, Type::Int32],
+            },
+            BuiltinFunction::FormatDate => Type::Function {
+                return_type: Box::new(Type::String),
+                args: vec![Type::String, Type::Int32, Type::Int32, Type::Int32],
+            },
             BuiltinFunction::TextInputFocused => {
                 Type::Function { return_type: Box::new(Type::Bool), args: vec![] }
             }
+            BuiltinFunction::DateNow => Type::Function {
+                return_type: Box::new(Type::Array(Box::new(Type::Int32))),
+                args: vec![],
+            },
+            BuiltinFunction::ValidDate => Type::Function {
+                return_type: Box::new(Type::Bool),
+                args: vec![Type::String, Type::String],
+            },
+            BuiltinFunction::ParseDate => Type::Function {
+                return_type: Box::new(Type::Array(Box::new(Type::Int32))),
+                args: vec![Type::String, Type::String],
+            },
             BuiltinFunction::SetTextInputFocused => {
                 Type::Function { return_type: Box::new(Type::Void), args: vec![Type::Bool] }
             }
@@ -273,6 +305,12 @@ impl BuiltinFunction {
                     Type::Array(Type::String.into()),
                 ],
             },
+            BuiltinFunction::Use24HourFormat => {
+                Type::Function { return_type: Box::new(Type::Bool), args: vec![] }
+            }
+            BuiltinFunction::UpdateTimers => {
+                Type::Function { return_type: Box::new(Type::Void), args: vec![] }
+            }
         }
     }
 
@@ -283,6 +321,12 @@ impl BuiltinFunction {
             BuiltinFunction::GetWindowDefaultFontSize => false,
             BuiltinFunction::AnimationTick => false,
             BuiltinFunction::ColorScheme => false,
+            BuiltinFunction::MonthDayCount => false,
+            BuiltinFunction::MonthOffset => false,
+            BuiltinFunction::FormatDate => false,
+            BuiltinFunction::DateNow => false,
+            BuiltinFunction::ValidDate => false,
+            BuiltinFunction::ParseDate => false,
             // Even if it is not pure, we optimize it away anyway
             BuiltinFunction::Debug => true,
             BuiltinFunction::Mod
@@ -330,6 +374,8 @@ impl BuiltinFunction {
             | BuiltinFunction::RegisterCustomFontByMemory
             | BuiltinFunction::RegisterBitmapFont => false,
             BuiltinFunction::Translate => false,
+            BuiltinFunction::Use24HourFormat => false,
+            BuiltinFunction::UpdateTimers => false,
         }
     }
 
@@ -340,6 +386,12 @@ impl BuiltinFunction {
             BuiltinFunction::GetWindowDefaultFontSize => true,
             BuiltinFunction::AnimationTick => true,
             BuiltinFunction::ColorScheme => true,
+            BuiltinFunction::MonthDayCount => true,
+            BuiltinFunction::MonthOffset => true,
+            BuiltinFunction::FormatDate => true,
+            BuiltinFunction::DateNow => true,
+            BuiltinFunction::ValidDate => true,
+            BuiltinFunction::ParseDate => true,
             // Even if it has technically side effect, we still consider it as pure for our purpose
             BuiltinFunction::Debug => true,
             BuiltinFunction::Mod
@@ -380,6 +432,8 @@ impl BuiltinFunction {
             | BuiltinFunction::RegisterCustomFontByMemory
             | BuiltinFunction::RegisterBitmapFont => false,
             BuiltinFunction::Translate => true,
+            BuiltinFunction::Use24HourFormat => true,
+            BuiltinFunction::UpdateTimers => false,
         }
     }
 }
@@ -689,6 +743,8 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+
+    EmptyComponentFactory,
 }
 
 impl Expression {
@@ -816,6 +872,7 @@ impl Expression {
             Expression::ComputeLayoutInfo(..) => crate::layout::layout_info_type(),
             Expression::SolveLayout(..) => Type::LayoutCache,
             Expression::MinMax { ty, .. } => ty.clone(),
+            Expression::EmptyComponentFactory => Type::ComponentFactory,
         }
     }
 
@@ -918,6 +975,7 @@ impl Expression {
                 visitor(lhs);
                 visitor(rhs);
             }
+            Expression::EmptyComponentFactory => {}
         }
     }
 
@@ -1022,6 +1080,7 @@ impl Expression {
                 visitor(lhs);
                 visitor(rhs);
             }
+            Expression::EmptyComponentFactory => {}
         }
     }
 
@@ -1069,7 +1128,10 @@ impl Expression {
             }
             Expression::BinaryExpression { lhs, rhs, .. } => lhs.is_constant() && rhs.is_constant(),
             Expression::UnaryOp { sub, .. } => sub.is_constant(),
-            Expression::Array { values, .. } => values.iter().all(Expression::is_constant),
+            // Array will turn into model, and they can't be considered as constant if the model
+            // is used and the model is changed. CF issue #5249
+            //Expression::Array { values, .. } => values.iter().all(Expression::is_constant),
+            Expression::Array { .. } => false,
             Expression::Struct { values, .. } => values.iter().all(|(_, v)| v.is_constant()),
             Expression::PathData(data) => match data {
                 Path::Elements(elements) => elements
@@ -1097,6 +1159,7 @@ impl Expression {
             Expression::ComputeLayoutInfo(..) => false,
             Expression::SolveLayout(..) => false,
             Expression::MinMax { lhs, rhs, .. } => lhs.is_constant() && rhs.is_constant(),
+            Expression::EmptyComponentFactory => true,
         }
     }
 
@@ -1283,7 +1346,6 @@ impl Expression {
         match ty {
             Type::Invalid
             | Type::Callback { .. }
-            | Type::ComponentFactory
             | Type::Function { .. }
             | Type::InferredProperty
             | Type::InferredCallback
@@ -1328,6 +1390,7 @@ impl Expression {
             Type::Enumeration(enumeration) => {
                 Expression::EnumerationValue(enumeration.clone().default_value())
             }
+            Type::ComponentFactory => Expression::EmptyComponentFactory,
         }
     }
 
@@ -1730,5 +1793,6 @@ pub fn pretty_print(f: &mut dyn std::fmt::Write, expression: &Expression) -> std
             pretty_print(f, rhs)?;
             write!(f, ")")
         }
+        Expression::EmptyComponentFactory => write!(f, "<empty-component-factory>"),
     }
 }

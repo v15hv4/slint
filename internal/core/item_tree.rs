@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore xffff
 
@@ -14,6 +14,8 @@ use crate::lengths::{LogicalPoint, LogicalRect};
 use crate::slice::Slice;
 use crate::window::WindowAdapterRc;
 use crate::SharedString;
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 use core::pin::Pin;
 use vtable::*;
 
@@ -127,6 +129,13 @@ pub struct ItemTreeVTable {
         core::pin::Pin<VRef<ItemTreeVTable>>,
         item_index: u32,
     ) -> SupportedAccessibilityAction,
+
+    /// Add the `ElementName::id` entries of the given item
+    pub item_element_infos: extern "C" fn(
+        core::pin::Pin<VRef<ItemTreeVTable>>,
+        item_index: u32,
+        result: &mut SharedString,
+    ) -> bool,
 
     /// Returns a Window, creating a fresh one if `do_create` is true.
     pub window_adapter: extern "C" fn(
@@ -304,21 +313,35 @@ impl ItemRc {
         r.upgrade()?.parent_item()
     }
 
-    // FIXME: This should be nicer/done elsewhere?
+    /// Returns true if this item is visible from the root of the item tree. Note that this will return
+    /// false for `Clip` elements with the `clip` property evaluating to true.
     pub fn is_visible(&self) -> bool {
+        let (clip, geometry) = self.absolute_clip_rect_and_geometry();
+        let intersection = geometry.intersection(&clip).unwrap_or_default();
+        !intersection.is_empty() || (geometry.is_empty() && clip.contains(geometry.center()))
+    }
+
+    /// Returns the clip rect that applies to this item (in window coordinates) as well as the
+    /// item's (unclipped) geometry (also in window coordinates).
+    fn absolute_clip_rect_and_geometry(&self) -> (LogicalRect, LogicalRect) {
+        let (mut clip, parent_geometry) = self.parent_item().map_or_else(
+            || {
+                (
+                    LogicalRect::from_size((crate::Coord::MAX, crate::Coord::MAX).into()),
+                    Default::default(),
+                )
+            },
+            |parent| parent.absolute_clip_rect_and_geometry(),
+        );
+
+        let geometry = self.geometry().translate(parent_geometry.origin.to_vector());
+
         let item = self.borrow();
-        let is_clipping = crate::item_rendering::is_clipping_item(item);
-        let geometry = self.geometry();
-
-        if is_clipping && (geometry.width() <= 0.01 as _ || geometry.height() <= 0.01 as _) {
-            return false;
+        if crate::item_rendering::is_clipping_item(item) {
+            clip = geometry.intersection(&clip).unwrap_or_default();
         }
 
-        if let Some(parent) = self.parent_item() {
-            parent.is_visible()
-        } else {
-            true
-        }
+        (clip, geometry)
     }
 
     pub fn is_accessible(&self) -> bool {
@@ -358,6 +381,38 @@ impl ItemRc {
     pub fn supported_accessibility_actions(&self) -> SupportedAccessibilityAction {
         let comp_ref_pin = vtable::VRc::borrow_pin(&self.item_tree);
         comp_ref_pin.as_ref().supported_accessibility_actions(self.index)
+    }
+
+    pub fn element_count(&self) -> Option<usize> {
+        let comp_ref_pin = vtable::VRc::borrow_pin(&self.item_tree);
+        let mut result = SharedString::new();
+        comp_ref_pin
+            .as_ref()
+            .item_element_infos(self.index, &mut result)
+            .then(|| result.as_str().split("/").count())
+    }
+
+    pub fn element_type_names_and_ids(
+        &self,
+        element_index: usize,
+    ) -> Option<Vec<(SharedString, SharedString)>> {
+        let comp_ref_pin = vtable::VRc::borrow_pin(&self.item_tree);
+        let mut result = SharedString::new();
+        comp_ref_pin.as_ref().item_element_infos(self.index, &mut result).then(|| {
+            result
+                .as_str()
+                .split("/")
+                .nth(element_index)
+                .unwrap()
+                .split(";")
+                .map(|encoded_elem_info| {
+                    let mut decoder = encoded_elem_info.split(',');
+                    let type_name = decoder.next().unwrap().into();
+                    let id = decoder.next().map(Into::into).unwrap_or_default();
+                    (type_name, id)
+                })
+                .collect()
+        })
     }
 
     pub fn geometry(&self) -> LogicalRect {
@@ -472,7 +527,8 @@ impl ItemRc {
 
                 let subtree_index = match parent_item_tree.get(parent_item_index)? {
                     crate::item_tree::ItemTreeNode::Item { .. } => {
-                        panic!("Got an Item, expected a repeater!")
+                        // Popups can trigger this case!
+                        return None;
                     }
                     crate::item_tree::ItemTreeNode::DynamicTree { index, .. } => *index,
                 };
@@ -649,6 +705,62 @@ impl ItemRc {
             &core::convert::identity,
             &|item_tree, index| crate::item_focus::step_out_of_node(index, item_tree),
         )
+    }
+
+    pub fn window_adapter(&self) -> Option<WindowAdapterRc> {
+        let comp_ref_pin = vtable::VRc::borrow_pin(&self.item_tree);
+        let mut result = None;
+        comp_ref_pin.as_ref().window_adapter(false, &mut result);
+        result
+    }
+
+    /// Visit the children of this element and call the visitor to each of them, until the visitor returns [`ControlFlow::Break`].
+    /// When the visitor breaks, the function returns the value. If it doesn't break, the function returns None.
+    fn visit_descendants_impl<R>(
+        &self,
+        visitor: &mut impl FnMut(&ItemRc) -> ControlFlow<R>,
+    ) -> Option<R> {
+        let mut result = None;
+
+        let mut actual_visitor = |item_tree: &ItemTreeRc,
+                                  index: u32,
+                                  _item_pin: core::pin::Pin<ItemRef>|
+         -> VisitChildrenResult {
+            let item_rc = ItemRc::new(item_tree.clone(), index);
+
+            match visitor(&item_rc) {
+                ControlFlow::Continue(_) => {
+                    if let Some(x) = item_rc.visit_descendants_impl(visitor) {
+                        result = Some(x);
+                        return VisitChildrenResult::abort(index, 0);
+                    }
+                }
+                ControlFlow::Break(x) => {
+                    result = Some(x);
+                    return VisitChildrenResult::abort(index, 0);
+                }
+            }
+
+            VisitChildrenResult::CONTINUE
+        };
+        vtable::new_vref!(let mut actual_visitor : VRefMut<ItemVisitorVTable> for ItemVisitor = &mut actual_visitor);
+
+        VRc::borrow_pin(self.item_tree()).as_ref().visit_children_item(
+            self.index() as isize,
+            TraversalOrder::BackToFront,
+            actual_visitor,
+        );
+
+        result
+    }
+
+    /// Visit the children of this element and call the visitor to each of them, until the visitor returns [`ControlFlow::Break`].
+    /// When the visitor breaks, the function returns the value. If it doesn't break, the function returns None.
+    pub fn visit_descendants<R>(
+        &self,
+        mut visitor: impl FnMut(&ItemRc) -> ControlFlow<R>,
+    ) -> Option<R> {
+        self.visit_descendants_impl(&mut visitor)
     }
 }
 
@@ -1152,6 +1264,10 @@ mod tests {
             false
         }
 
+        fn item_element_infos(self: Pin<&Self>, _: u32, _: &mut SharedString) -> bool {
+            false
+        }
+
         fn window_adapter(
             self: Pin<&Self>,
             _do_create: bool,
@@ -1189,7 +1305,7 @@ mod tests {
                 item_array_index: 0,
             }],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
         VRc::into_dyn(component)
     }
@@ -1260,7 +1376,7 @@ mod tests {
                 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
         VRc::into_dyn(component)
     }
@@ -1370,7 +1486,7 @@ mod tests {
                 ItemTreeNode::DynamicTree { index: 0, parent_index: 0 },
             ],
             subtrees: std::cell::RefCell::new(vec![vec![]]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
         vtable::VRc::into_dyn(component)
     }
@@ -1439,7 +1555,7 @@ mod tests {
                 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
 
         component.as_pin_ref().subtrees.replace(vec![vec![VRc::new(TestItemTree {
@@ -1564,7 +1680,7 @@ mod tests {
                 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
 
         let sub_component1 = VRc::new(TestItemTree {
@@ -1580,7 +1696,7 @@ mod tests {
                 ItemTreeNode::DynamicTree { index: 0, parent_index: 0 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
         let sub_component2 = VRc::new(TestItemTree {
             parent_component: Some(VRc::into_dyn(sub_component1.clone())),
@@ -1601,7 +1717,7 @@ mod tests {
                 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
 
         sub_component1.as_pin_ref().subtrees.replace(vec![vec![sub_component2]]);
@@ -1741,7 +1857,7 @@ mod tests {
                 },
             ],
             subtrees: std::cell::RefCell::new(vec![]),
-            subtree_index: core::usize::MAX,
+            subtree_index: usize::MAX,
         });
 
         component.as_pin_ref().subtrees.replace(vec![vec![

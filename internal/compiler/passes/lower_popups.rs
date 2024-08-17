@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passe that transform the PopupWindow element into a component
 
@@ -8,8 +8,7 @@ use crate::expression_tree::{Expression, NamedReference};
 use crate::langtype::{ElementType, Type};
 use crate::object_tree::*;
 use crate::typeregister::TypeRegister;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 pub fn lower_popups(
     component: &Rc<Component>,
@@ -45,13 +44,6 @@ fn lower_popup_window(
     let parent_component = popup_window_element.borrow().enclosing_component.upgrade().unwrap();
     let parent_element = match parent_element {
         None => {
-            if parent_component.is_root_component.get() {
-                diag.push_error(
-                    "PopupWindow cannot be the top level".into(),
-                    &*popup_window_element.borrow(),
-                );
-                return;
-            }
             if matches!(popup_window_element.borrow().base_type, ElementType::Builtin(_)) {
                 popup_window_element.borrow_mut().base_type = window_type.clone();
             }
@@ -127,10 +119,24 @@ fn lower_popup_window(
         e.borrow_mut().enclosing_component = weak.clone()
     });
 
-    // Generate a x and y property, relative to the window coordinate
-    // FIXME: this is a hack that doesn't always work, perhaps should we store an item ref or something
-    let coord_x = create_coordinate(&popup_comp, parent_element, "x");
-    let coord_y = create_coordinate(&popup_comp, parent_element, "y");
+    // Take a reference to the x/y coordinates, to be read when calling show_popup(), and
+    // converted to absolute coordinates in the run-time library.
+    let coord_x = NamedReference::new(&popup_comp.root_element, "x");
+    let coord_y = NamedReference::new(&popup_comp.root_element, "y");
+
+    // Meanwhile, set the geometry x/y to zero, because we'll be shown as a top-level and
+    // children should be rendered starting with a (0, 0) offset.
+    {
+        let mut popup_mut = popup_comp.root_element.borrow_mut();
+        let name = format!("popup-{}-dummy", popup_mut.id);
+        popup_mut.property_declarations.insert(name.clone(), Type::LogicalLength.into());
+        drop(popup_mut);
+        let dummy1 = NamedReference::new(&popup_comp.root_element, &name);
+        let dummy2 = NamedReference::new(&popup_comp.root_element, &name);
+        let mut popup_mut = popup_comp.root_element.borrow_mut();
+        popup_mut.geometry_props.as_mut().unwrap().x = dummy1;
+        popup_mut.geometry_props.as_mut().unwrap().y = dummy2;
+    }
 
     // Throw error when accessing the popup from outside
     // FIXME:
@@ -138,14 +144,21 @@ fn lower_popup_window(
     // - There are other object reference than in the NamedReference
     // - Maybe this should actually be allowed
     visit_all_named_references(&parent_component, &mut |nr| {
-        if std::rc::Weak::ptr_eq(&nr.element().borrow().enclosing_component, &weak) {
-            diag.push_error(
-                "Cannot access the inside of a PopupWindow from enclosing component".into(),
-                &*popup_window_element.borrow(),
-            );
+        let element = &nr.element();
+        if check_element(element, &weak, diag, popup_window_element) {
             // just set it to whatever is a valid NamedReference, otherwise we'll panic later
             *nr = coord_x.clone();
         }
+    });
+    visit_all_expressions(&parent_component, |exp, _| {
+        exp.visit_recursive_mut(&mut |exp| {
+            if let Expression::ElementReference(ref element) = exp {
+                let elem = element.upgrade().unwrap();
+                if !Rc::ptr_eq(&elem, popup_window_element) {
+                    check_element(&elem, &weak, diag, popup_window_element);
+                }
+            }
+        });
     });
 
     parent_component.popup_windows.borrow_mut().push(PopupWindow {
@@ -157,26 +170,19 @@ fn lower_popup_window(
     });
 }
 
-fn create_coordinate(
-    popup_comp: &Rc<Component>,
-    parent_element: &ElementRc,
-    coord: &str,
-) -> NamedReference {
-    let expression = popup_comp
-        .root_element
-        .borrow_mut()
-        .bindings
-        .remove(coord)
-        .map(|e| e.into_inner().expression)
-        .unwrap_or(Expression::NumberLiteral(0., crate::expression_tree::Unit::Phx));
-    let property_name = format!("{}-popup-{}", popup_comp.root_element.borrow().id, coord);
-    parent_element
-        .borrow_mut()
-        .property_declarations
-        .insert(property_name.clone(), Type::LogicalLength.into());
-    parent_element
-        .borrow_mut()
-        .bindings
-        .insert(property_name.clone(), RefCell::new(expression.into()));
-    NamedReference::new(parent_element, &property_name)
+fn check_element(
+    element: &ElementRc,
+    popup_comp: &Weak<Component>,
+    diag: &mut BuildDiagnostics,
+    popup_window_element: &ElementRc,
+) -> bool {
+    if Weak::ptr_eq(&element.borrow().enclosing_component, popup_comp) {
+        diag.push_error(
+            "Cannot access the inside of a PopupWindow from enclosing component".into(),
+            &*popup_window_element.borrow(),
+        );
+        true
+    } else {
+        false
+    }
 }

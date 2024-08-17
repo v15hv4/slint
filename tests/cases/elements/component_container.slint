@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // FIXME: Skip embedding test on C++ and NodeJS since ComponentFactory is not
 // implemented there!
@@ -17,6 +17,11 @@ export component TestCase inherits Rectangle {
     in property<component-factory> c1 <=> cont1.component-factory;
     in property<component-factory> c2 <=> cont2.component-factory;
     out property<bool> outside-focus <=> outside.has-focus;
+
+
+    private property <component-factory> some-factory;
+    ComponentContainer { component-factory: some-factory; }
+    out property <bool> test: some-factory == some-factory;
 }
 
 /*
@@ -27,7 +32,7 @@ export component TestCase inherits Rectangle {
 ```rust
 let factory = slint::ComponentFactory::new(|ctx| {
 
-    let mut compiler = slint_interpreter::ComponentCompiler::new();
+    let compiler = slint_interpreter::Compiler::new();
     let e = spin_on::spin_on(compiler.build_from_source(
         r#"import { Button } from "std-widgets.slint";
 
@@ -39,7 +44,7 @@ export component E1 inherits Rectangle {
     }
 }"#.into(),
         std::path::PathBuf::from("embedded.slint"),
-     )).unwrap();
+     )).component("E1").unwrap();
      e.create_embedded(ctx).ok()
 });
 

@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 
@@ -122,6 +122,11 @@ upgrade_item_weak(const cbindgen_private::ItemWeak &item_weak)
     } else {
         return std::nullopt;
     }
+}
+
+inline void debug(const SharedString &str)
+{
+    cbindgen_private::slint_debug(&str);
 }
 
 } // namespace private_api
@@ -345,18 +350,12 @@ public:
 
     /// \private
     /// Internal function called by the view to register itself
-    void attach_peer(private_api::ModelPeer p)
-    {
-        peers.push_back(std::move(p));
-    }
+    void attach_peer(private_api::ModelPeer p) { peers.push_back(std::move(p)); }
 
     /// \private
     /// Internal function called from within bindings to register with the currently
     /// evaluating dependency and get notified when this model's row count changes.
-    void track_row_count_changes() const
-    {
-        model_row_count_dirty_property.get();
-    }
+    void track_row_count_changes() const { model_row_count_dirty_property.get(); }
 
     /// \private
     /// Internal function called from within bindings to register with the currently
@@ -701,7 +700,7 @@ public:
     FilterModel(std::shared_ptr<Model<ModelData>> source_model,
                 std::function<bool(const ModelData &)> filter_fn)
         : inner(std::make_shared<private_api::FilterModelInner<ModelData>>(
-                std::move(source_model), std::move(filter_fn), *this))
+                  std::move(source_model), std::move(filter_fn), *this))
     {
         inner->source_model->attach_peer(inner);
     }
@@ -789,7 +788,7 @@ public:
     MapModel(std::shared_ptr<Model<SourceModelData>> source_model,
              std::function<MappedModelData(const SourceModelData &)> map_fn)
         : inner(std::make_shared<private_api::MapModelInner<SourceModelData, MappedModelData>>(
-                *this)),
+                  *this)),
           model(source_model),
           map_fn(map_fn)
     {
@@ -1276,10 +1275,7 @@ inline SharedString translate(const SharedString &original, const SharedString &
 /// Example
 /// ```cpp
 ///     my_ui->global<LanguageSettings>().on_french_selected([] {
-///        // trick from https://www.gnu.org/software/gettext/manual/html_node/gettext-grok.html
 ///        setenv("LANGUAGE", langs[l], true);
-///        extern int _nl_msg_cat_cntr;
-///        ++_nl_msg_cat_cntr;
 ///        slint::update_all_translations();
 ///    });
 /// ```
@@ -1407,7 +1403,7 @@ void invoke_from_event_loop(Functor f)
             [](void *data) { delete reinterpret_cast<Functor *>(data); });
 }
 
-#ifndef SLINT_FEATURE_FREESTANDING
+#if !defined(SLINT_FEATURE_FREESTANDING) || defined(DOXYGEN)
 
 /// Blocking version of invoke_from_event_loop()
 ///

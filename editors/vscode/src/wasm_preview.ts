@@ -1,5 +1,5 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-1.2 OR LicenseRef-Slint-commercial
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import { Uri } from "vscode";
 
@@ -220,6 +220,7 @@ function initPreviewPanel(
     context: vscode.ExtensionContext,
     panel: vscode.WebviewPanel,
 ): vscode.WebviewPanel {
+    panel.iconPath = Uri.joinPath(context.extensionUri, "slint-file-icon.svg");
     // we will get a preview_ready when the html is loaded and message are ready to be sent
     panel.webview.onDidReceiveMessage(
         async (message) => {
